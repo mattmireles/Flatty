@@ -394,7 +394,8 @@ process_by_directory() {
                 current_chunk_dirs=()
                 current_chunk_tokens=0
             fi
-            # Handle the large directory
+            # Pass the correct directory index (i) to write_large_directory
+            [ "$VERBOSE" = true ] && print_info "Calling write_large_directory with index $i for directory $dir"
             write_large_directory "$chunk_number" "$dir" "$i"
             ((chunk_number++))
             continue
