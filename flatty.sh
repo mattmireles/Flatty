@@ -474,7 +474,7 @@ write_chunk() {
         if [ "$found_index" -ge 0 ]; then
             if ! validate_token_counts "$dir" "$found_index" "${SCAN_DIR_TOKEN_COUNTS[$found_index]}"; then
                 print_error "Token count validation failed for chunk directory: $dir"
-                continue
+                return 1
             fi
             [ "$VERBOSE" = true ] && print_info "  Processing files from: $dir"
             while IFS= read -r f; do
@@ -494,6 +494,11 @@ write_large_directory() {
     local chunk_number="$1"
     local dir="$2"
     local dir_index="$3"
+    
+    if [ "$dir_index" -lt 0 ] || [ "$dir_index" -ge "${#SCAN_DIR_TOKEN_COUNTS[@]}" ]; then
+        print_error "Invalid directory index: $dir_index"
+        return 1
+    }
     
     local dir_tokens="${SCAN_DIR_TOKEN_COUNTS[$dir_index]}"
     # Make sure we have a numeric value
