@@ -28,7 +28,14 @@ cd your-project-directory
 flatty
 ```
 
-This will create flattened text files in `~/flattened/` containing all the text files from your project.
+This will analyze your project and create appropriately-sized text files in `~/flattened/` containing all the text files from your project.
+
+### Smart Size Management
+
+Flatty automatically handles projects of any size:
+- Small projects (under 100k tokens) → single consolidated file
+- Large projects → smart splitting based on directory structure
+- Very large files → automatic chunking with clear continuation markers
 
 ### Command Options
 
@@ -39,7 +46,7 @@ Options:
     -o, --output-dir DIR     Output directory (default: ~/flattened)
     -g, --group-by MODE      Grouping mode:
                             directory  - Group by directory structure (default)
-                            type       - Group by file type
+                            type      - Group by file type
                             size      - Evenly split by token count
     -i, --include PATTERN    Include only files matching pattern
     -x, --exclude PATTERN    Exclude files matching pattern
@@ -71,25 +78,26 @@ Flatty offers three ways to organize your files:
    ```bash
    flatty --group-by directory
    ```
-   - Preserves directory structure
-   - Creates new files when changing directories or hitting token limit
-   - Best for understanding project organization
+   - Preserves directory structure in output
+   - Keeps related files together
+   - Shows clear token counts per directory
+   - Perfect for understanding project organization
 
 2. **Type-based**:
    ```bash
    flatty --group-by type
    ```
-   - Groups similar file types together (e.g., all Swift files)
-   - Useful for language-specific analysis
-   - Automatically categorizes into: python, javascript, golang, ruby, java, c, cpp, swift, objective-c, html, css, docs, config, other
+   - Groups similar file types together
+   - Great for language-specific analysis
+   - Categories: python, javascript, golang, ruby, java, c, cpp, swift, objective-c, html, css, docs, config, other
 
 3. **Size-based**:
    ```bash
    flatty --group-by size -t 50000
    ```
-   - Splits files evenly by token count
-   - Perfect for LLMs with specific context window sizes
-   - Ensures no file exceeds token limit
+   - Creates evenly-sized chunks
+   - Best for specific token limits
+   - Clear part numbers and continuation markers
 
 ### Examples
 
@@ -114,27 +122,57 @@ flatty -x "*_test*" -x "*spec*" -x "doc/*"
 
 Flatty intelligently processes your codebase:
 
-1. **Smart Filtering**: Only includes text files, automatically ignoring binaries, images, and other non-text content
+1. **Smart Size Analysis**
+   - Analyzes total project size first
+   - Uses single file for small projects
+   - Automatically splits larger projects
+   - Handles directories exceeding token limits
 
-2. **Token Management**: Estimates tokens (roughly 4 characters per token) to keep files within LLM context window limits
+2. **Clean Organization**
+   - Directory structure preservation
+   - Token count tracking
+   - Clear file boundaries
+   - Detailed headers with context
 
-3. **File Organization**: Creates structured output with clear separators and headers showing:
-   - Project name
-   - Generation timestamp
-   - File paths or grouping information
-   - Original file content
+3. **Intelligent Filtering**
+   - Automatic text file detection
+   - Binary/image exclusion
+   - Configurable patterns
+   - Common ignore paths (node_modules, .git, etc.)
 
-4. **Error Handling**: Exits gracefully on errors, preserving your original files
+The output includes helpful metadata:
+```
+# Project: my-project
+# Generated: 2025-01-09 21:55:33
+# Directory: src/components
+# Total Tokens: ~95000
+---
+Complete Repository Structure:
+  src/
+    components/ (~45000 tokens)
+    utils/ (~30000 tokens)
+    tests/ (~20000 tokens)
+---
+[file contents follow...]
+```
 
-The output files are saved with timestamps and descriptive names, making it easy to manage multiple runs:
+## Output Organization
 
+Files are saved with descriptive names:
 ```
 ~/flattened/
-  project-name-2025-01-09_02-33-33-1-src.txt
-  project-name-2025-01-09_02-33-33-2-tests.txt
-  ...
+  project-name-2025-01-09_21-55-33.txt           # Single file for small projects
+  project-name-2025-01-09_21-55-33-part1-src.txt # Directory-based split
+  project-name-2025-01-09_21-55-33-part2-lib.txt
+  project-name-2025-01-09_21-55-33-swift.txt     # Type-based grouping
+  project-name-2025-01-09_21-55-33-cpp.txt
 ```
 
 ## Smart File Handling
 
-The naive approach would include binary files, audio, images, and other stuff that would blow up the file size without adding value for code analysis. Flatty tries to solve this by intelligently ignoring certain file types.
+Flatty intelligently skips:
+- Binary files and images
+- Build artifacts
+- Package directories (node_modules, vendor)
+- Hidden files and .git
+- System files (.DS_Store)

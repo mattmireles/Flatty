@@ -13,6 +13,40 @@ VERBOSE=false
 # Default exclude patterns for common non-source directories
 DEFAULT_EXCLUDES=("*.git/*" "*.DS_Store" "*node_modules/*" "*.swiftpm/*")
 
+# Add these helper functions near the top after the configuration
+print_status() {
+    echo "🔄 $1"
+}
+
+print_success() {
+    echo "✅ $1"
+}
+
+print_info() {
+    echo "ℹ️  $1"
+}
+
+# Add a function to calculate total tokens for initial assessment
+calculate_total_tokens() {
+    local total_tokens=0
+    local file_count=0
+    
+    print_status "Analyzing repository size..."
+    
+    while IFS= read -r -d $'\n' file; do
+        if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
+            ((file_count++))
+            total_tokens=$((total_tokens + $(estimate_tokens "$(cat "$file")")))
+            if [ "$VERBOSE" = true ]; then
+                echo "  Scanning: $file"
+            fi
+        fi
+    done < <(find . -type f | sort)
+    
+    print_info "Found $file_count files totaling approximately $total_tokens tokens"
+    echo "$total_tokens"
+}
+
 # Help text
 show_help() {
     cat << EOF
@@ -166,7 +200,7 @@ write_file_content() {
 }
 
 # ---------------------------------------
-# Helper function to construct chunk filename
+# Helper function: Build a descriptive filename for a chunk
 # ---------------------------------------
 build_chunk_filename() {
     local chunk_number=$1
@@ -197,6 +231,120 @@ build_chunk_filename() {
 }
 
 # ---------------------------------------
+# Helper function to write a group (chunk) of directories to one file
+# ---------------------------------------
+write_chunk() {
+    local chunk_number="$1"
+    local -a current_dirs=("${!2}")         # We pass current_dirs by name
+    local -a current_dir_tokens=("${!3}")   # We pass current_dir_tokens by name
+    local -a dir_names_ref=("${!4}")        # Full list of directory names
+    local -a dir_token_counts_ref=("${!5}") # Full list of directory token counts
+    local -a dir_file_lists_ref=("${!6}")   # Full list of file lists
+
+    # Build an output file name that includes some directory info
+    local output_file
+    output_file=$(build_chunk_filename "$chunk_number" "${current_dirs[@]}" )
+    
+    # Write header
+    echo "# Project: $(basename "$PWD")" > "$output_file"
+    echo "# Generated: $(date)" >> "$output_file"
+    local total_chunk_tokens=0
+    
+    # Summarize directories in this chunk
+    echo "# Directories in this chunk:" >> "$output_file"
+    for i in "${!current_dirs[@]}"; do
+        local dir="${current_dirs[$i]}"
+        local dtokens="${current_dir_tokens[$i]}"
+        echo "#   $dir (~${dtokens} tokens)" >> "$output_file"
+        total_chunk_tokens=$((total_chunk_tokens + dtokens))
+    done
+    
+    echo "---" >> "$output_file"
+
+    # Write out the actual files
+    local chunk_file_count=0
+    for i in "${!current_dirs[@]}"; do
+        local dir="${current_dirs[$i]}"
+        
+        echo -e "\n## Directory: $dir" >> "$output_file"
+        
+        # We need to find the corresponding entry in dir_names_ref to get the file list
+        local found_index=-1
+        for idx in "${!dir_names_ref[@]}"; do
+            if [ "${dir_names_ref[$idx]}" = "$dir" ]; then
+                found_index=$idx
+                break
+            fi
+        done
+        
+        if [ "$found_index" -ge 0 ]; then
+            # Split the files by newline and write them
+            while IFS= read -r f; do
+                [ -z "$f" ] && continue
+                ((chunk_file_count++))
+                write_file_content "$f" "$output_file"
+            done <<< "${dir_file_lists_ref[$found_index]}"
+        fi
+    done
+    
+    # Print out some final info to the terminal
+    print_info "Created: $(basename "$output_file") (tokens in chunk: $total_chunk_tokens, dirs: ${#current_dirs[@]}, files: $chunk_file_count)"
+
+    # Update a global variable if you like, or just return
+    # echo "$output_file" # could echo if you want to capture in calling function
+}
+
+# ---------------------------------------
+# Helper function: When a single directory is larger than TOKEN_LIMIT
+# Split it across multiple chunks, each chunk containing subsets of files
+# ---------------------------------------
+write_large_directory() {
+    local file_counter="$1"
+    local dir="$2"
+    local file_list="$3"
+    
+    print_status "Directory '$dir' exceeds token limit, splitting at file level..."
+    
+    # We'll chunk the files in that directory
+    local sub_tokens=0
+    local chunk_subfile_count=0
+    local part_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-part${file_counter}-$(echo "$dir" | sed 's|/|-|g' | tr -d ' ')-sub.txt"
+    
+    # Write chunk header
+    echo "# Project: $(basename "$PWD")" > "$part_file"
+    echo "# Generated: $(date)" >> "$part_file"
+    echo "# Directory: $dir (exceeds token limit, splitting files)" >> "$part_file"
+    echo "---" >> "$part_file"
+
+    # Read each file in this directory
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        local f_tokens
+        f_tokens=$(estimate_tokens "$(cat "$f")")
+        
+        if [ $((sub_tokens + f_tokens)) -gt "$TOKEN_LIMIT" ] && [ "$sub_tokens" -gt 0 ]; then
+            # we finalize the current sub-chunk and start a new one
+            print_info "Sub-chunk for $dir complete. (tokens: $sub_tokens, files: $chunk_subfile_count)"
+            ((file_counter++))
+            sub_tokens=0
+            chunk_subfile_count=0
+            part_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-part${file_counter}-$(echo "$dir" | sed 's|/|-|g' | tr -d ' ')-sub.txt"
+            echo "# Project: $(basename "$PWD")" > "$part_file"
+            echo "# Generated: $(date)" >> "$part_file"
+            echo "# Directory: $dir (continuation)" >> "$part_file"
+            echo "---" >> "$part_file"
+        fi
+        
+        write_file_content "$f" "$part_file"
+        sub_tokens=$((sub_tokens + f_tokens))
+        ((chunk_subfile_count++))
+        
+    done <<< "$file_list"
+    
+    print_info "Created: $(basename "$part_file") (directory: $dir, files: $chunk_subfile_count, tokens: $sub_tokens)"
+}
+
+# ---------------------------------------
 # Smart directory-based processing
 # ---------------------------------------
 process_by_directory() {
@@ -207,12 +355,15 @@ process_by_directory() {
     local processed_files=0
     local created_files=()
     local total_tokens=0
-    declare -A dir_tokens
-    declare -A dir_files
-
+    
+    # Instead of associative arrays, we'll use parallel arrays
+    local dir_names=()
+    local dir_token_counts=()
+    local dir_file_lists=()
+    
     print_status "Analyzing repository size..."
-
-    # Gather files, track tokens for each directory
+    
+    # Gather files and track tokens by directory
     while IFS= read -r -d $'\n' file; do
         if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
             ((total_files++))
@@ -221,100 +372,112 @@ process_by_directory() {
             local tokens
             tokens=$(estimate_tokens "$(cat "$file")")
             total_tokens=$((total_tokens + tokens))
-            # Accumulate tokens per directory
-            dir_tokens["$dir"]=$(( dir_tokens["$dir"] + tokens ))
-            # Remember the file in dir_files
-            if [ -z "${dir_files["$dir"]}" ]; then
-                dir_files["$dir"]="$file"
+            
+            # Find or create directory entry
+            local dir_index=-1
+            for i in "${!dir_names[@]}"; do
+                if [ "${dir_names[$i]}" = "$dir" ]; then
+                    dir_index=$i
+                    break
+                fi
+            done
+            
+            if [ $dir_index -eq -1 ]; then
+                # New directory
+                dir_names+=("$dir")
+                dir_token_counts+=($tokens)
+                dir_file_lists+=("$file")
             else
-                dir_files["$dir"]="${dir_files["$dir"]}"$'\n'"$file"
+                # Existing directory
+                dir_token_counts[$dir_index]=$((dir_token_counts[$dir_index] + tokens))
+                dir_file_lists[$dir_index]="${dir_file_lists[$dir_index]}"$'\n'"$file"
             fi
         fi
     done < <(find . -type f | sort)
-
+    
     print_info "Found $total_files files totaling approximately $total_tokens tokens"
-
+    
     # If entire repo fits in a single file
     if [ "$total_tokens" -le "$TOKEN_LIMIT" ]; then
         print_status "Repository fits within token limit. Creating single consolidated file..."
         current_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}.txt"
-
+        
         # Write header
         echo "# Project: $(basename "$PWD")" > "$current_file"
         echo "# Generated: $(date)" >> "$current_file"
         echo "# Total Tokens: ~$total_tokens" >> "$current_file"
         echo "---" >> "$current_file"
-
+        
         # Write all files
-        for d in "${!dir_files[@]}"; do
-            echo -e "\n## Directory: $d" >> "$current_file"
+        for i in "${!dir_names[@]}"; do
+            local dir="${dir_names[$i]}"
+            echo -e "\n## Directory: $dir" >> "$current_file"
             while IFS= read -r f; do
                 [ -z "$f" ] && continue
                 ((processed_files++))
                 write_file_content "$f" "$current_file"
-            done <<< "${dir_files["$d"]}"
+            done <<< "${dir_file_lists[$i]}"
         done
-
+        
         print_success "Created: $(basename "$current_file")"
         print_info "Location: $current_file"
         return
     fi
-
+    
     print_status "Repository exceeds token limit. Creating logically grouped files..."
-
-    # 1) Sort directories by tokens used (descending)
-    local dir_list=()
-    for d in "${!dir_tokens[@]}"; do
-        dir_list+=( "$d ${dir_tokens["$d"]}" )
+    
+    # Create sorted directory list by tokens
+    local sorted_indices=()
+    for i in "${!dir_names[@]}"; do
+        sorted_indices+=("$i ${dir_token_counts[$i]}")
     done
-    IFS=$'\n' dir_list=( $(sort -rn -k2 <<< "${dir_list[*]}") )
+    IFS=$'\n' sorted_indices=($(printf "%s\n" "${sorted_indices[@]}" | sort -rn -k2))
     unset IFS
-
+    
     current_tokens=0
     file_counter=1
     local current_dirs=()
-
-    for entry in "${dir_list[@]}"; do
-        local d="${entry% *}"
-        local d_tokens="${entry##* }"
-
-        # If we can add this entire directory to the current chunk
-        if [ $((current_tokens + d_tokens)) -le $TOKEN_LIMIT ]; then
-            current_tokens=$((current_tokens + d_tokens))
-            current_dirs+=( "$d" )
+    local current_dir_tokens=()
+    
+    # Process directories in order of size
+    for entry in "${sorted_indices[@]}"; do
+        local idx="${entry%% *}"
+        local dir="${dir_names[$idx]}"
+        local dir_tokens="${dir_token_counts[$idx]}"
+        
+        if [ $((current_tokens + dir_tokens)) -le "$TOKEN_LIMIT" ]; then
+            current_tokens=$((current_tokens + dir_tokens))
+            current_dirs+=("$dir")
+            current_dir_tokens+=($dir_tokens)
         else
-            # If we already have some directories in our current chunk, finalize that chunk
+            # Write current chunk if we have any directories
             if [ ${#current_dirs[@]} -gt 0 ]; then
-                current_file=$(build_chunk_filename "$file_counter" "${current_dirs[@]}")
-                created_files+=( "$current_file" )
-                write_directories_to_file "$current_file" current_dirs current_tokens dir_tokens dir_files
+                write_chunk "$file_counter" current_dirs current_dir_tokens dir_names dir_token_counts dir_file_lists
+                created_files+=("$current_file")
                 ((file_counter++))
                 current_dirs=()
+                current_dir_tokens=()
                 current_tokens=0
             fi
-
-            # Now handle a big directory that by itself might exceed the limit
-            if [ "$d_tokens" -gt "$TOKEN_LIMIT" ]; then
-                # We'll have to chunk the files in that directory individually
-                file_counter=$((file_counter + 1))
-                chunk_directory_by_file "$d" "$d_tokens" "$file_counter" dir_files
+            
+            # Handle directory that wouldn't fit
+            if [ "$dir_tokens" -gt "$TOKEN_LIMIT" ]; then
+                write_large_directory "$file_counter" "$dir" "${dir_file_lists[$idx]}"
                 ((file_counter++))
             else
-                # If the directory alone fits in an empty chunk, start a new chunk with this dir
-                current_tokens=$d_tokens
-                current_dirs=( "$d" )
+                current_tokens=$dir_tokens
+                current_dirs=("$dir")
+                current_dir_tokens=($dir_tokens)
             fi
         fi
     done
-
-    # If any directories remain unfinalized
+    
+    # Write final chunk if any directories remain
     if [ ${#current_dirs[@]} -gt 0 ]; then
-        current_file=$(build_chunk_filename "$file_counter" "${current_dirs[@]}")
-        created_files+=( "$current_file" )
-        write_directories_to_file "$current_file" current_dirs current_tokens dir_tokens dir_files
+        write_chunk "$file_counter" current_dirs current_dir_tokens dir_names dir_token_counts dir_file_lists
+        created_files+=("$current_file")
     fi
-
-    # Print summary
+    
     print_success "Created $file_counter files total"
     for output_file in "${created_files[@]}"; do
         echo "  📄 $(basename "$output_file")"
@@ -433,40 +596,6 @@ process_by_type() {
             [ "$VERBOSE" = true ] && echo "Processing: $file ($current_tokens tokens)"
         fi
     done < <(find . -type f | sort)
-}
-
-# Add these helper functions near the top after the configuration
-print_status() {
-    echo "🔄 $1"
-}
-
-print_success() {
-    echo "✅ $1"
-}
-
-print_info() {
-    echo "ℹ️  $1"
-}
-
-# Add a function to calculate total tokens for initial assessment
-calculate_total_tokens() {
-    local total_tokens=0
-    local file_count=0
-    
-    print_status "Analyzing repository size..."
-    
-    while IFS= read -r -d $'\n' file; do
-        if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
-            ((file_count++))
-            total_tokens=$((total_tokens + $(estimate_tokens "$(cat "$file")")))
-            if [ "$VERBOSE" = true ]; then
-                echo "  Scanning: $file"
-            fi
-        fi
-    done < <(find . -type f | sort)
-    
-    print_info "Found $file_count files totaling approximately $total_tokens tokens"
-    echo "$total_tokens"
 }
 
 # Modify the process_by_size function to handle single-file case
