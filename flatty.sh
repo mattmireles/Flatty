@@ -205,12 +205,16 @@ write_file_content() {
 build_chunk_filename() {
     local chunk_number=$1
     local dir="$2"
+    local is_sub="$3"
     
-    # Clean up directory name for filename
+    # Clean up directory name - remove leading ./ and clean separators
     local safe_dirname=$(echo "$dir" | sed 's|^\./||' | sed 's|/|-|g' | tr -d ' ')
     
-    # Build the filename
-    echo "${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-part${chunk_number}-${safe_dirname}.txt"
+    # Build the filename with consistent format
+    local suffix=""
+    [ "$is_sub" = "true" ] && suffix="-sub"
+    
+    echo "${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-part${chunk_number}-${safe_dirname}${suffix}.txt"
 }
 
 # ---------------------------------------
@@ -226,7 +230,7 @@ write_chunk() {
 
     # Build an output file name that includes some directory info
     local output_file
-    output_file=$(build_chunk_filename "$chunk_number" "${current_dirs[@]}" )
+    output_file=$(build_chunk_filename "$chunk_number" "${current_dirs[@]}" "false")
     
     # Write header
     echo "# Project: $(basename "$PWD")" > "$output_file"
@@ -271,7 +275,7 @@ write_chunk() {
     done
     
     # Track created files in an array
-    created_files+=("$(basename "$output_file")")
+    created_files+=("$output_file")
     
     print_info "Created chunk $chunk_number: $(basename "$output_file") (tokens: $total_chunk_tokens, files: $chunk_file_count)"
 }
@@ -323,7 +327,10 @@ write_large_directory() {
         
     done <<< "$file_list"
     
-    print_info "Created: $(basename "$part_file") (directory: $dir, files: $chunk_subfile_count, tokens: $sub_tokens)"
+    # Track each sub-chunk
+    created_files+=("$part_file")
+    
+    print_info "Created sub-chunk: $(basename "$part_file") (directory: $dir, files: $chunk_subfile_count, tokens: $sub_tokens)"
 }
 
 # ---------------------------------------
@@ -335,7 +342,7 @@ process_by_directory() {
     local file_counter=0
     local total_files=0
     local processed_files=0
-    local created_files=()
+    local -a created_files=()
     local total_tokens=0
     
     # Instead of associative arrays, we'll use parallel arrays
