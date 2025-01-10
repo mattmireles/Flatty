@@ -498,11 +498,11 @@ write_large_directory() {
     if [ "$dir_index" -lt 0 ] || [ "$dir_index" -ge "${#SCAN_DIR_TOKEN_COUNTS[@]}" ]; then
         print_error "Invalid directory index: $dir_index"
         return 1
-    }
+    fi
     
     local dir_tokens="${SCAN_DIR_TOKEN_COUNTS[$dir_index]}"
     # Make sure we have a numeric value
-    if [[ ! "$dir_tokens" =~ ^[0-9]+$ ]]; then
+    if ! [[ "$dir_tokens" =~ ^[0-9]+$ ]]; then
         print_error "Internal error: Directory $dir has invalid token count: $dir_tokens"
         return 1
     fi
@@ -537,6 +537,11 @@ write_large_directory() {
         [ -z "$f" ] && continue
         local f_tokens
         f_tokens=$(estimate_tokens "$(cat "$f")")
+        
+        if [ "$f_tokens" -gt "$TOKEN_LIMIT" ]; then
+            print_error "Single file $f exceeds the token limit (${f_tokens} > ${TOKEN_LIMIT}). Skipping or handle differently."
+            continue
+        fi
         
         # If adding this file would exceed limit, start new chunk
         if [ $((current_tokens + f_tokens)) -gt "$TOKEN_LIMIT" ] && [ "$current_tokens" -gt 0 ]; then
