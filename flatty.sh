@@ -334,19 +334,18 @@ process_by_directory() {
         local dir="${SCAN_DIR_NAMES[i]}"
         local dtokens="${SCAN_DIR_TOKEN_COUNTS[i]}"
         
-        # Debug output
-        [ "$VERBOSE" = true ] && print_info "Processing directory: $dir with $dtokens tokens"
+        print_info "Processing directory: $dir ($dtokens tokens)"
         
-        # Only split if directory is actually large (and verify the count)
+        # Only split if directory is ACTUALLY large
         if [ "$dtokens" -gt "$TOKEN_LIMIT" ]; then
-            [ "$VERBOSE" = true ] && print_info "Directory exceeds token limit: $dir ($dtokens tokens)"
-            # Write any pending chunk before handling large directory
+            print_info "Large directory: $dir ($dtokens tokens)"
+            # Write any pending chunk first
             if [ ${#current_chunk_dirs[@]} -gt 0 ]; then
                 write_chunk "$chunk_number" "${current_chunk_dirs[@]}" "$current_chunk_tokens"
                 ((chunk_number++))
                 current_chunk_dirs=()
                 current_chunk_tokens=0
-            fi
+            }
             # Handle the large directory
             write_large_directory "$chunk_number" "$dir" "$i"
             ((chunk_number++))
