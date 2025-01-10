@@ -626,7 +626,7 @@ write_full_directory_structure() {
     local output_file="$1"
     
     echo -e "\n# Complete Repository Structure:" >> "$output_file"
-    echo "# (showing all directories and their token counts)" >> "$output_file"
+    echo "# (showing all directories and files with token counts)" >> "$output_file"
     
     # First show root directory total
     local root_tokens=0
@@ -638,6 +638,23 @@ write_full_directory_structure() {
     done
     
     echo "# ./ (~${root_tokens} tokens)" >> "$output_file"
+    
+    # Show files in root directory
+    local root_index
+    for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
+        if [ "${SCAN_DIR_NAMES[i]}" = "." ]; then
+            root_index=$i
+            break
+        fi
+    done
+    
+    if [ -n "$root_index" ]; then
+        while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            local f_tokens=$(estimate_tokens "$(cat "$file")")
+            echo "#   └── $(basename "$file") (~$f_tokens tokens)" >> "$output_file"
+        done <<< "${SCAN_DIR_FILE_LISTS[$root_index]}"
+    fi
     
     # Collect and sort all non-root directories
     local all_dirs=()
@@ -651,7 +668,7 @@ write_full_directory_structure() {
     IFS=$'\n' sorted_dirs=($(sort <<< "${all_dirs[*]}"))
     unset IFS
     
-    # Show subdirectories with proper indentation
+    # Show subdirectories with proper indentation and their files
     for dir in "${sorted_dirs[@]}"; do
         IFS='/' read -ra parts <<< "$dir"
         local depth=$((${#parts[@]} - 1))
@@ -662,7 +679,7 @@ write_full_directory_structure() {
             indent="$indent  "
         done
         
-        # Find matching index for token count
+        # Find matching index for token count and files
         local dir_index
         for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
             if [ "${SCAN_DIR_NAMES[i]}" = "$dir" ]; then
@@ -672,6 +689,13 @@ write_full_directory_structure() {
         done
         
         echo "# ${indent}${parts[-1]}/ (~${SCAN_DIR_TOKEN_COUNTS[dir_index]} tokens)" >> "$output_file"
+        
+        # List files in this directory
+        while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            local f_tokens=$(estimate_tokens "$(cat "$file")")
+            echo "#   ${indent}└── $(basename "$file") (~$f_tokens tokens)" >> "$output_file"
+        done <<< "${SCAN_DIR_FILE_LISTS[$dir_index]}"
     done
     
     echo -e "#\n# Current Chunk Contains:" >> "$output_file"
