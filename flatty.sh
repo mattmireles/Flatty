@@ -628,35 +628,31 @@ write_full_directory_structure() {
     echo -e "\n# Complete Repository Structure:" >> "$output_file"
     echo "# (showing all directories and files with token counts)" >> "$output_file"
     
-    # First show root directory total
+    # 1. Find total tokens for root (.) directory
     local root_tokens=0
+    local root_index=-1
     for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
         if [ "${SCAN_DIR_NAMES[i]}" = "." ]; then
-            root_tokens=${SCAN_DIR_TOKEN_COUNTS[i]}
-            break
-        fi
-    done
-    
-    echo "# ./ (~${root_tokens} tokens)" >> "$output_file"
-    
-    # Show files in root directory
-    local root_index
-    for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
-        if [ "${SCAN_DIR_NAMES[i]}" = "." ]; then
+            root_tokens="${SCAN_DIR_TOKEN_COUNTS[i]}"
             root_index=$i
             break
         fi
     done
     
-    if [ -n "$root_index" ]; then
+    # 2. Print root directory and its tokens
+    echo "# ./ (~${root_tokens} tokens)" >> "$output_file"
+    
+    # 3. List root directory files (if index found)
+    if [ "$root_index" -ge 0 ]; then
         while IFS= read -r file; do
             [ -z "$file" ] && continue
-            local f_tokens=$(estimate_tokens "$(cat "$file")")
+            local f_tokens
+            f_tokens=$(estimate_tokens "$(cat "$file")")
             echo "#   └── $(basename "$file") (~$f_tokens tokens)" >> "$output_file"
         done <<< "${SCAN_DIR_FILE_LISTS[$root_index]}"
     fi
     
-    # Collect and sort all non-root directories
+    # 4. Gather non-root directories
     local all_dirs=()
     for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
         if [ "${SCAN_DIR_NAMES[i]}" != "." ]; then
@@ -664,38 +660,41 @@ write_full_directory_structure() {
         fi
     done
     
-    # Sort directories for consistent output
+    # 5. Sort them for a cleaner, more consistent layout
     IFS=$'\n' sorted_dirs=($(sort <<< "${all_dirs[*]}"))
     unset IFS
     
-    # Show subdirectories with proper indentation and their files
+    # 6. Print subdirectories with indentation + file lists
     for dir in "${sorted_dirs[@]}"; do
         IFS='/' read -ra parts <<< "$dir"
         local depth=$((${#parts[@]} - 1))
         
-        # Create indent based on directory depth
         local indent=""
-        for ((i=0; i<depth; i++)); do
+        for ((n=0; n<depth; n++)); do
             indent="$indent  "
         done
         
-        # Find matching index for token count and files
-        local dir_index
-        for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
-            if [ "${SCAN_DIR_NAMES[i]}" = "$dir" ]; then
-                dir_index=$i
+        # Find matching index in SCAN_DIR_NAMES
+        local dir_index=-1
+        for ((j=0; j<${#SCAN_DIR_NAMES[@]}; j++)); do
+            if [ "${SCAN_DIR_NAMES[j]}" = "$dir" ]; then
+                dir_index=$j
                 break
             fi
         done
         
-        echo "# ${indent}${parts[-1]}/ (~${SCAN_DIR_TOKEN_COUNTS[dir_index]} tokens)" >> "$output_file"
-        
-        # List files in this directory
-        while IFS= read -r file; do
-            [ -z "$file" ] && continue
-            local f_tokens=$(estimate_tokens "$(cat "$file")")
-            echo "#   ${indent}└── $(basename "$file") (~$f_tokens tokens)" >> "$output_file"
-        done <<< "${SCAN_DIR_FILE_LISTS[$dir_index]}"
+        # Print subdir's token count
+        if [ "$dir_index" -ge 0 ]; then
+            echo "# ${indent}${parts[-1]}/ (~${SCAN_DIR_TOKEN_COUNTS[dir_index]} tokens)" >> "$output_file"
+            
+            # List each file in that subdirectory
+            while IFS= read -r file; do
+                [ -z "$file" ] && continue
+                local f_tokens
+                f_tokens=$(estimate_tokens "$(cat "$file")")
+                echo "#   ${indent}└── $(basename "$file") (~$f_tokens tokens)" >> "$output_file"
+            done <<< "${SCAN_DIR_FILE_LISTS[$dir_index]}"
+        fi
     done
     
     echo -e "#\n# Current Chunk Contains:" >> "$output_file"
