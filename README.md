@@ -176,3 +176,5 @@ Flatty intelligently skips:
 - Package directories (node_modules, vendor)
 - Hidden files and .git
 - System files (.DS_Store)
+
+Developed with ❤️ by [TalkTastic](https://talktastic.com/)
