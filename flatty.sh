@@ -270,9 +270,9 @@ write_file_content() {
 # Gather directory names, token counts, and file lists.
 
 scan_repository() {
-    local -n dir_names_ref="$1"
-    local -n dir_tokens_ref="$2"
-    local -n dir_files_ref="$3"
+    local dir_names_var="$1"
+    local dir_tokens_var="$2"
+    local dir_files_var="$3"
     
     print_status "Scanning repository structure..."
     
@@ -281,33 +281,17 @@ scan_repository() {
     IFS=$'\n'
     
     while IFS= read -r -d $'\n' file; do
-        # Only text-like files that match patterns
         if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
             local dir
             dir="$(dirname "$file")"
             local tokens
             tokens=$(estimate_tokens "$(cat "$file")")
-
-            # Check if directory already exists in our arrays
-            local found=false
-            local idx=0
-            for ((i=0; i<${#dir_names_ref[@]}; i++)); do
-                if [ "${dir_names_ref[i]}" = "$dir" ]; then
-                    found=true
-                    idx=$i
-                    break
-                fi
-            done
-
-            # If found, update; otherwise append
-            if [ "$found" = true ]; then
-                dir_tokens_ref[idx]=$((dir_tokens_ref[idx] + tokens))
-                dir_files_ref[idx]="${dir_files_ref[idx]}${file}"$'\n'
-            else
-                dir_names_ref+=("$dir")
-                dir_tokens_ref+=($tokens)
-                dir_files_ref+=("${file}"$'\n')
-            fi
+            
+            eval "$dir_names_var+=(\"$dir\")"
+            
+            eval "$dir_tokens_var+=(\"$tokens\")"
+            
+            eval "$dir_files_var+=(\"$file\"$'\\n')"
             
             [ "$VERBOSE" = true ] && echo "  Scanning: $file (${tokens} tokens)"
         fi
@@ -324,32 +308,36 @@ scan_repository() {
 # For small repos within the token limit.
 
 write_single_file() {
-    local -n dir_names_ref="$1"
-    local -n dir_tokens_ref="$2"
-    local -n dir_files_ref="$3"
-    
+    local dir_names_var="$1"
+    local dir_tokens_var="$2"
+    local dir_files_var="$3"
+
     print_status "Repository fits within token limit. Creating single consolidated file..."
     local current_file
     current_file=$(create_output_file "main" "main") || exit 1
-    
-    # Write header with structure
+
+    # Example usage:
     echo "# Project: $(basename "$PWD")" > "$current_file"
     echo "# Generated: $(date)" >> "$current_file"
-    write_full_directory_structure "$current_file" dir_tokens_ref
-    echo "---" >> "$current_file"
+    # We can’t just say ${dir_names_ref[@]}, so do something like:
+    #   eval "local -a dir_array=( \"\${${dir_names_var}[@]}\" )"
 
-    # Write all files in directory order
-    for ((i=0; i<${#dir_names_ref[@]}; i++)); do
-        local dir="${dir_names_ref[i]}"
+    eval "local -a dir_array=( \"\${${dir_names_var}[@]}\" )"
+    eval "local -a token_array=( \"\${${dir_tokens_var}[@]}\" )"
+    eval "local -a file_list_array=( \"\${${dir_files_var}[@]}\" )"
+
+    # Then iterate over dir_array, etc.
+    for ((i=0; i<${#dir_array[@]}; i++)); do
+        local dir="${dir_array[i]}"
         echo -e "\n## Directory: $dir" >> "$current_file"
-        
-        # Use a while-read to write each file
+
+        # read the newline-delimited files for that directory
+        local files="${file_list_array[i]}"
         while IFS= read -r f; do
             [ -z "$f" ] && continue
             write_file_content "$f" "$current_file"
-        done <<< "${dir_files_ref[i]}"
+        done <<< "$files"
     done
-    
     created_files+=("$current_file")
     print_success "Created: $(basename "$current_file")"
 }
