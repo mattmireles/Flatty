@@ -10,6 +10,9 @@ TOKEN_LIMIT=100000
 GROUP_BY="directory"  # directory, type, or size
 VERBOSE=false
 
+# Default exclude patterns for common non-source directories
+DEFAULT_EXCLUDES=("*.git/*" "*.DS_Store" "*node_modules/*" "*.swiftpm/*")
+
 # Help text
 show_help() {
     cat << EOF
@@ -97,6 +100,13 @@ matches_patterns() {
     local file="$1"
     local matched=false
     
+    # Check default excludes first
+    for pattern in "${DEFAULT_EXCLUDES[@]}"; do
+        if [[ "$file" == $pattern ]]; then
+            return 1  # Return false if file matches any default exclude
+        fi
+    done
+    
     # If no include patterns, match everything
     if [ ${#INCLUDE_PATTERNS[@]} -eq 0 ]; then
         matched=true
@@ -163,6 +173,7 @@ process_by_directory() {
     local current_dir=""
     local total_files=0
     local processed_files=0
+    local created_files=()
     
     print_status "Analyzing files..."
     
@@ -188,7 +199,8 @@ process_by_directory() {
             # Start new file if directory changes or token limit reached
             if [ "$dir" != "$current_dir" ] || [ $current_tokens -gt $TOKEN_LIMIT ]; then
                 if [ ! -z "$current_file" ]; then
-                    print_info "Created: $(basename "$current_file") (files: $processed_files)"
+                    created_files+=("$current_file")
+                    print_info "Created: $(basename "$current_file") (files: $processed_files, tokens: $current_tokens)"
                 fi
                 
                 current_dir="$dir"
@@ -201,8 +213,6 @@ process_by_directory() {
                 echo "# Directory: $dir" >> "$current_file"
                 echo "# Generated: $(date)" >> "$current_file"
                 echo "---" >> "$current_file"
-                
-                print_status "Processing directory: $dir"
             fi
             
             write_file_content "$file" "$current_file"
@@ -210,19 +220,20 @@ process_by_directory() {
             ((processed_files++))
             
             if [ "$VERBOSE" = true ]; then
-                echo "  Processing ($processed_files/$total_files): $file"
+                echo "Processing ($processed_files/$total_files): $file"
             fi
         fi
     done < <(find . -type f | sort)
     
-    # Report final file if it exists
+    # Add the last file to our list if it exists
     if [ ! -z "$current_file" ]; then
-        print_info "Created: $(basename "$current_file") (files: $processed_files)"
+        created_files+=("$current_file")
+        print_info "Created: $(basename "$current_file") (files: $processed_files, tokens: $current_tokens)"
     fi
     
-    print_success "Processed $processed_files files into $file_counter output files"
-    for ((i=1; i<=$file_counter; i++)); do
-        echo "  📄 $(basename "$PWD")-${RUN_TIMESTAMP}-${i}-*.txt"
+    print_success "Created $file_counter files:"
+    for file in "${created_files[@]}"; do
+        echo "  📄 $(basename "$file")"
     done
 }
 
