@@ -439,7 +439,6 @@ write_large_directory() {
     local sub_tokens=0
     local chunk_subfile_count=0
     local part_file
-    # Changed to match naming convention
     part_file=$(create_output_file "$file_counter" "chunk") || exit 1
     
     [ "$VERBOSE" = true ] && print_info "Creating sub-chunk for large directory: $dir"
@@ -461,7 +460,7 @@ write_large_directory() {
         if ! [[ "$f_tokens" =~ ^[0-9]+$ ]]; then
             print_error "Invalid token count for file $f: $f_tokens"
             continue
-        }
+        fi
         
         if [ $((sub_tokens + f_tokens)) -gt "$TOKEN_LIMIT" ] && [ "$sub_tokens" -gt 0 ]; then
             print_info "Sub-chunk for $dir complete. (tokens: $sub_tokens, files: $chunk_subfile_count)"
