@@ -159,16 +159,38 @@ write_file_content() {
 process_by_directory() {
     local current_file=""
     local current_tokens=0
-    local file_counter=1
+    local file_counter=0
     local current_dir=""
+    local total_files=0
+    local processed_files=0
     
-    # First, group files by directory
+    print_status "Analyzing files..."
+    
+    # Count total files first
+    while IFS= read -r -d $'\n' file; do
+        if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
+            ((total_files++))
+        fi
+    done < <(find . -type f | sort)
+    
+    if [ $total_files -eq 0 ]; then
+        print_info "No matching text files found in directory"
+        return
+    fi
+    
+    print_status "Found $total_files text files to process"
+    
+    # Process files
     while IFS= read -r -d $'\n' file; do
         if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
             dir=$(dirname "$file")
             
             # Start new file if directory changes or token limit reached
             if [ "$dir" != "$current_dir" ] || [ $current_tokens -gt $TOKEN_LIMIT ]; then
+                if [ ! -z "$current_file" ]; then
+                    print_info "Created: $(basename "$current_file") (files: $processed_files)"
+                fi
+                
                 current_dir="$dir"
                 file_counter=$((file_counter + 1))
                 current_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-${file_counter}-${dir//\//-}.txt"
@@ -179,13 +201,29 @@ process_by_directory() {
                 echo "# Directory: $dir" >> "$current_file"
                 echo "# Generated: $(date)" >> "$current_file"
                 echo "---" >> "$current_file"
+                
+                print_status "Processing directory: $dir"
             fi
             
             write_file_content "$file" "$current_file"
             current_tokens=$((current_tokens + $(estimate_tokens "$(cat "$file")")))
-            [ "$VERBOSE" = true ] && echo "Processing: $file ($current_tokens tokens)"
+            ((processed_files++))
+            
+            if [ "$VERBOSE" = true ]; then
+                echo "  Processing ($processed_files/$total_files): $file"
+            fi
         fi
     done < <(find . -type f | sort)
+    
+    # Report final file if it exists
+    if [ ! -z "$current_file" ]; then
+        print_info "Created: $(basename "$current_file") (files: $processed_files)"
+    fi
+    
+    print_success "Processed $processed_files files into $file_counter output files"
+    for ((i=1; i<=$file_counter; i++)); do
+        echo "  📄 $(basename "$PWD")-${RUN_TIMESTAMP}-${i}-*.txt"
+    done
 }
 
 # Function to process files by type
