@@ -158,6 +158,50 @@ matches_patterns() {
     [ "$matched" = true ]
 }
 
+# 5a. Validate Token Counts
+validate_token_counts() {
+    local dir="$1"
+    local dir_index="$2"
+    local expected_tokens="$3"
+
+    if [ -z "$dir" ] || [ -z "$expected_tokens" ]; then
+        print_error "validate_token_counts: Missing parameter(s)"
+        return 1
+    fi
+
+    if [ "$dir_index" -lt 0 ] || [ "$dir_index" -ge "${#SCAN_DIR_NAMES[@]}" ]; then
+        print_error "validate_token_counts: Invalid directory index: $dir_index"
+        return 1
+    fi
+
+    local actual_tokens=0
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        if [ ! -f "$f" ]; then
+            print_error "validate_token_counts: File not found: $f"
+            continue
+        fi
+        local f_tokens
+        f_tokens=$(estimate_tokens "$(cat "$f")")
+        actual_tokens=$((actual_tokens + f_tokens))
+    done <<< "${SCAN_DIR_FILE_LISTS[$dir_index]}"
+
+    # (Optional) Let’s allow a small tolerance, e.g., ±1%
+    local tolerance=$((expected_tokens / 100))
+    local diff=$((actual_tokens - expected_tokens))
+    diff=${diff#-}  # absolute value
+
+    if [ "$diff" -gt "$tolerance" ]; then
+        print_error "Token count mismatch for $dir:"
+        print_error "  Expected: $expected_tokens"
+        print_error "  Actual:   $actual_tokens"
+        return 1
+    fi
+
+    [ "$VERBOSE" = true ] && print_info "Validated token count for $dir: $actual_tokens tokens"
+    return 0
+}
+
 
 # ==========================================================
 # 6. File Creation and Content Writing
@@ -451,8 +495,13 @@ write_large_directory() {
     local dir="$2"
     local dir_index="$3"
     
-    # Validate directory actually needs splitting
     local dir_tokens="${SCAN_DIR_TOKEN_COUNTS[$dir_index]}"
+    # Make sure we have a numeric value
+    if [[ ! "$dir_tokens" =~ ^[0-9]+$ ]]; then
+        print_error "Internal error: Directory $dir has invalid token count: $dir_tokens"
+        return 1
+    fi
+
     if [ "$dir_tokens" -le "$TOKEN_LIMIT" ]; then
         print_error "Internal error: Directory $dir ($dir_tokens tokens) does not exceed token limit ($TOKEN_LIMIT)"
         return 1
