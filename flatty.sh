@@ -266,6 +266,10 @@ scan_repository() {
             fi
 
             [ "$VERBOSE" = true ] && echo "  Scanning: $file (${tokens} tokens)"
+            if [ "$VERBOSE" = true ]; then
+                validate_token_counts "$dir" "$found_index" "${SCAN_DIR_TOKEN_COUNTS[$found_index]}" || \
+                    print_error "Token count validation failed for $dir"
+            fi
         fi
     done < <(find . -type f | sort)
     
@@ -424,6 +428,10 @@ write_chunk() {
         done
         
         if [ "$found_index" -ge 0 ]; then
+            if ! validate_token_counts "$dir" "$found_index" "${SCAN_DIR_TOKEN_COUNTS[$found_index]}"; then
+                print_error "Token count validation failed for chunk directory: $dir"
+                continue
+            fi
             [ "$VERBOSE" = true ] && print_info "  Processing files from: $dir"
             while IFS= read -r f; do
                 [ -z "$f" ] && continue
