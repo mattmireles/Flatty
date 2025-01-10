@@ -65,6 +65,31 @@ declare -a created_files=()
 DEFAULT_EXCLUDES=("*.git/*" "*.DS_Store" "*node_modules/*" "*.swiftpm/*")
 
 # ---------------------------------------
+# Environment Validation
+# ---------------------------------------
+validate_environment() {
+    # Check for empty directory
+    if [ -z "$(find . -type f -print -quit)" ]; then
+        print_error "No files found in directory"
+        exit 1
+    }
+
+    # Validate output directory
+    if [ ! -w "$(dirname "$OUTPUT_DIR")" ]; then
+        print_error "Cannot write to output directory location: $OUTPUT_DIR"
+        exit 1
+    }
+
+    # Check for required tools
+    for cmd in find grep sed tr wc; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            print_error "Required command not found: $cmd"
+            exit 1
+        fi
+    done
+}
+
+# ---------------------------------------
 # Helper Functions: Output & Logging
 # ---------------------------------------
 
@@ -876,56 +901,3 @@ done
 
 # Print final summary
 print_summary
-validate_environment() {
-    # Check for empty directory
-    if [ -z "$(find . -type f -print -quit)" ]; then
-        print_error "No files found in directory"
-        exit 1
-    fi
-
-    # Validate output directory
-    if [ ! -w "$(dirname "$OUTPUT_DIR")" ]; then
-        print_error "Cannot write to output directory location: $OUTPUT_DIR"
-        exit 1
-    }
-
-    # Check for required tools
-    for cmd in find grep sed tr wc; do
-        if ! command -v "$cmd" >/dev/null 2>&1; then
-            print_error "Required command not found: $cmd"
-            exit 1
-        fi
-    done
-}
-
-create_output_file() {
-    local name="$1"
-    local type="$2"  # main, chunk, sub-chunk
-    
-    local file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}"
-    case "$type" in
-        main)
-            file+=".txt"
-            ;;
-        chunk)
-            file+="-part${name}.txt"
-            ;;
-        sub-chunk)
-            file+="-part${name}-sub.txt"
-            ;;
-        *)
-            print_error "Invalid file type: $type"
-            return 1
-            ;;
-    esac
-    
-    # Use 'noclobber' in a subshell to safely create the file.
-    # This prevents overwriting if it already exists (race condition fix).
-    if ! (set -o noclobber; > "$file" 2>/dev/null); then
-        print_error "Output file already exists or cannot be created: $file"
-        return 1
-    fi
-    
-    created_files+=("$file")
-    echo "$file"
-}
