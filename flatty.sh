@@ -164,7 +164,7 @@ matches_patterns() {
 # ==========================================================
 create_output_file() {
     local name="$1"
-    local type="$2"  # main, chunk, sub-chunk
+    local type="$2"  # main, chunk
 
     local file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}"
     case "$type" in
@@ -173,9 +173,6 @@ create_output_file() {
             ;;
         chunk)
             file+="-part${name}.txt"
-            ;;
-        sub-chunk)
-            file+="-part${name}-sub.txt"
             ;;
         *)
             print_error "Invalid file type: $type"
@@ -339,7 +336,7 @@ process_by_directory() {
         
         if [ $(( current_chunk_tokens + dtokens )) -gt "$TOKEN_LIMIT" ]; then
             if [ ${#current_chunk_dirs[@]} -gt 0 ]; then
-                write_chunk "$chunk_number" current_chunk_dirs current_chunk_tokens
+                write_chunk "$chunk_number" "${current_chunk_dirs[@]}" "$current_chunk_tokens"
                 ((chunk_number++))
                 current_chunk_dirs=()
                 current_chunk_tokens=0
@@ -357,7 +354,7 @@ process_by_directory() {
     done
 
     if [ ${#current_chunk_dirs[@]} -gt 0 ]; then
-        write_chunk "$chunk_number" current_chunk_dirs current_chunk_tokens
+        write_chunk "$chunk_number" "${current_chunk_dirs[@]}" "$current_chunk_tokens"
     fi
 }
 
