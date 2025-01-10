@@ -1,10 +1,18 @@
 #!/bin/bash
 
+# ---------------------------------------
+# Flatty - Convert directories into LLM-friendly text files
+# ---------------------------------------
+
 # Exit on any error and failed pipes
 set -e
 set -o pipefail
 
-# Error handler
+# ---------------------------------------
+# Error Handling & Cleanup
+# ---------------------------------------
+
+# Error handler for unexpected failures
 handle_error() {
     local line_no=$1
     local error_code=$2
@@ -13,7 +21,37 @@ handle_error() {
 }
 trap 'handle_error ${LINENO} $?' ERR
 
-# Default configuration
+# Array for tracking files that need cleanup
+declare -a cleanup_files=()
+
+cleanup() {
+    local exit_code=$?
+    
+    # Clean up any temporary files
+    if [ ${#cleanup_files[@]} -gt 0 ]; then
+        print_status "Cleaning up temporary files..."
+        for file in "${cleanup_files[@]}"; do
+            [ -f "$file" ] && rm -f "$file"
+        done
+    fi
+    
+    # Handle non-zero exit
+    if [ $exit_code -ne 0 ]; then
+        print_error "Process failed with exit code $exit_code"
+        # Could add additional cleanup here
+    fi
+    
+    exit $exit_code
+}
+
+trap cleanup EXIT
+trap 'exit 1' INT TERM
+
+# ---------------------------------------
+# Configuration & Globals
+# ---------------------------------------
+
+# Default configuration values
 OUTPUT_DIR="$HOME/flattened"
 SEPARATOR="---"
 TOKEN_LIMIT=100000
@@ -26,7 +64,10 @@ declare -a created_files=()
 # Default exclude patterns for common non-source directories
 DEFAULT_EXCLUDES=("*.git/*" "*.DS_Store" "*node_modules/*" "*.swiftpm/*")
 
-# Add these helper functions near the top after the configuration
+# ---------------------------------------
+# Helper Functions: Output & Logging
+# ---------------------------------------
+
 print_status() {
     echo "🔄 $1"
 }
@@ -43,6 +84,7 @@ print_error() {
     echo "❌ $1" >&2
 }
 
+# Rest of file continues with similar section headers...
 # Add a function to calculate total tokens for initial assessment
 calculate_total_tokens() {
     local total_tokens=0
@@ -138,6 +180,9 @@ if [[ ! "$TOKEN_LIMIT" =~ ^[0-9]+$ ]] || [ "$TOKEN_LIMIT" -lt 1000 ]; then
     exit 1
 fi
 
+# Now call environment validation
+validate_environment || exit 1
+
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
 
@@ -147,9 +192,10 @@ RUN_TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
 # Helper function to estimate tokens
 estimate_tokens() {
     local content="$1"
+    # Use printf to handle special characters more consistently
     local char_count
-    char_count=$(echo "$content" | wc -c)
-    echo $((char_count / 4))  # Rough estimate: ~4 chars per token
+    char_count=$(printf "%s" "$content" | wc -c | tr -d '[:space:]')
+    echo $((char_count / 4))
 }
 
 # Helper function to check if file matches patterns
@@ -215,11 +261,40 @@ write_file_content() {
     local file="$1"
     local output_file="$2"
     
-    echo "$SEPARATOR" >> "$output_file"
-    echo "$file" >> "$output_file"
-    echo "$SEPARATOR" >> "$output_file"
-    cat "$file" >> "$output_file"
-    echo "" >> "$output_file"
+    if [ ! -f "$file" ]; then
+        print_error "File not found: $file"
+        return 1
+    }
+    
+    if [ ! -r "$file" ]; then
+        print_error "Cannot read file: $file"
+        return 1
+    }
+    
+    echo "$SEPARATOR" >> "$output_file" || {
+        print_error "Failed to write separator to output file"
+        return 1
+    }
+    
+    echo "$file" >> "$output_file" || {
+        print_error "Failed to write filename to output file"
+        return 1
+    }
+    
+    echo "$SEPARATOR" >> "$output_file" || {
+        print_error "Failed to write separator to output file"
+        return 1
+    }
+    
+    cat "$file" >> "$output_file" || {
+        print_error "Failed to write file content: $file"
+        return 1
+    }
+    
+    echo "" >> "$output_file" || {
+        print_error "Failed to write newline to output file"
+        return 1
+    }
 }
 
 # ---------------------------------------
@@ -252,7 +327,7 @@ write_chunk() {
     local -a dir_file_lists_ref=("${!6}")
 
     local output_file
-    output_file=$(build_chunk_filename "$chunk_number" "${current_dirs[@]}" "false")
+    output_file=$(create_output_file "$chunk_number" "chunk") || exit 1
     local total_chunk_tokens=0
     
     # Write initial header
@@ -321,7 +396,8 @@ write_large_directory() {
     
     local sub_tokens=0
     local chunk_subfile_count=0
-    local part_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-part${file_counter}-$(echo "$dir" | sed 's|/|-|g' | tr -d ' ')-sub.txt"
+    local part_file
+    part_file=$(create_output_file "$file_counter" "sub-chunk") || exit 1
     
     # Write complete header with repository structure
     echo "# Project: $(basename "$PWD")" > "$part_file"
@@ -374,10 +450,15 @@ write_large_directory() {
 
 # Add new scan_repository function
 scan_repository() {
-    local -n dir_tokens_map="$1"
-    local -n dir_files_map="$2"
+    local -n dir_names_ref="$1"
+    local -n dir_tokens_ref="$2"
+    local -n dir_files_ref="$3"
     
     print_status "Scanning repository structure..."
+    
+    # Save original IFS
+    local old_IFS="$IFS"
+    IFS=$'\n'
     
     while IFS= read -r -d $'\n' file; do
         if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
@@ -386,42 +467,87 @@ scan_repository() {
             local tokens
             tokens=$(estimate_tokens "$(cat "$file")")
             
-            # Initialize arrays if needed
-            dir_tokens_map["$dir"]=$((${dir_tokens_map["$dir"]:-0} + tokens))
-            dir_files_map["$dir"]="${dir_files_map["$dir"]:-}${file}"$'\n'
+            # Check if directory already exists in our array
+            local found=false
+            local idx=0
+            for ((i=0; i<${#dir_names_ref[@]}; i++)); do
+                if [ "${dir_names_ref[i]}" = "$dir" ]; then
+                    found=true
+                    idx=$i
+                    break
+                fi
+            done
+            
+            if [ "$found" = true ]; then
+                dir_tokens_ref[idx]=$((dir_tokens_ref[idx] + tokens))
+                dir_files_ref[idx]="${dir_files_ref[idx]}${file}"$'\n'
+            else
+                dir_names_ref+=("$dir")
+                dir_tokens_ref+=($tokens)
+                dir_files_ref+=("${file}"$'\n')
+            fi
             
             [ "$VERBOSE" = true ] && echo "  Scanning: $file (${tokens} tokens)"
         fi
     done < <(find . -type f | sort)
     
-    if [ "$VERBOSE" = true ]; then
-        echo -e "\nDirectory Structure:"
-        for dir in "${!dir_tokens_map[@]}"; do
-            echo "  $dir: ${dir_tokens_map[$dir]} tokens"
-        done
-    fi
+    # Restore original IFS
+    IFS="$old_IFS"
 }
 
-# Update process_by_directory to use declare instead of local -A
-process_by_directory() {
-    # Declare associative arrays properly
-    declare -A dir_tokens
-    declare -A dir_files
+# ------------------------------------------------------------------
+# Move write_single_file() above process_by_directory()
+# ------------------------------------------------------------------
+write_single_file() {
+    local -n dir_names_ref="$1"
+    local -n dir_tokens_ref="$2"
+    local -n dir_files_ref="$3"
     
-    # Scan repository first
-    scan_repository dir_tokens dir_files
+    print_status "Repository fits within token limit. Creating single consolidated file..."
+    local current_file
+    current_file=$(create_output_file "main" "main") || exit 1
+    
+    # Write header with full structure
+    echo "# Project: $(basename "$PWD")" > "$current_file"
+    echo "# Generated: $(date)" >> "$current_file"
+    write_full_directory_structure "$current_file" dir_tokens_ref
+    echo "---" >> "$current_file"
+
+    # Write all files in directory order
+    for ((i=0; i<${#dir_names_ref[@]}; i++)); do
+        local dir="${dir_names_ref[i]}"
+        echo -e "\n## Directory: $dir" >> "$current_file"
+        while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            write_file_content "$f" "$current_file"
+        done <<< "${dir_files_ref[i]}"
+    done
+    
+    created_files+=("$current_file")
+    print_success "Created: $(basename "$current_file")"
+}
+
+# ------------------------------------------------------------------
+# Now your process_by_directory() function can safely call write_single_file()
+# ------------------------------------------------------------------
+process_by_directory() {
+    declare -a dir_names=()
+    declare -a dir_token_counts=()
+    declare -a dir_file_lists=()
+    
+    scan_repository dir_names dir_token_counts dir_file_lists
     
     # Calculate total tokens
     local total_tokens=0
-    for dir in "${!dir_tokens[@]}"; do
-        total_tokens=$((total_tokens + dir_tokens["$dir"]))
+    for ((i=0; i<${#dir_token_counts[@]}; i++)); do
+        total_tokens=$((total_tokens + dir_token_counts[i]))
     done
     
-    print_info "Found ${#dir_files[@]} directories totaling approximately $total_tokens tokens"
+    print_info "Found ${#dir_names[@]} directories totaling approximately $total_tokens tokens"
     
     # Handle single-file case
     if [ "$total_tokens" -le "$TOKEN_LIMIT" ]; then
-        write_single_file dir_tokens dir_files
+        write_single_file dir_names dir_token_counts dir_file_lists
         return
     fi
     
@@ -430,30 +556,33 @@ process_by_directory() {
     local current_chunk_tokens=0
     local chunk_number=1
     
-    for dir in "${!dir_files[@]}"; do
-        if [ $((current_chunk_tokens + dir_tokens["$dir"])) -gt "$TOKEN_LIMIT" ]; then
+    for ((i=0; i<${#dir_names[@]}; i++)); do
+        local dir="${dir_names[i]}"
+        local dir_token="${dir_token_counts[i]}"
+        
+        if [ $((current_chunk_tokens + dir_token)) -gt "$TOKEN_LIMIT" ]; then
             if [ ${#current_chunk_dirs[@]} -gt 0 ]; then
-                write_chunk "$chunk_number" current_chunk_dirs[@] dir_tokens[@] dir_files[@]
+                write_chunk "$chunk_number" current_chunk_dirs[@] dir_token_counts[@] dir_names[@] dir_token_counts[@] dir_file_lists[@]
                 ((chunk_number++))
                 current_chunk_dirs=()
                 current_chunk_tokens=0
             fi
             
             # Handle large directories
-            if [ "${dir_tokens["$dir"]}" -gt "$TOKEN_LIMIT" ]; then
-                write_large_directory "$chunk_number" "$dir" "${dir_files["$dir"]}" dir_tokens
+            if [ "$dir_token" -gt "$TOKEN_LIMIT" ]; then
+                write_large_directory "$chunk_number" "$dir" "${dir_file_lists[i]}" dir_token_counts[@]
                 ((chunk_number++))
                 continue
             fi
         fi
         
         current_chunk_dirs+=("$dir")
-        current_chunk_tokens=$((current_chunk_tokens + dir_tokens["$dir"]))
+        current_chunk_tokens=$((current_chunk_tokens + dir_token))
     done
     
     # Write final chunk if needed
     if [ ${#current_chunk_dirs[@]} -gt 0 ]; then
-        write_chunk "$chunk_number" current_chunk_dirs[@] dir_tokens[@] dir_files[@]
+        write_chunk "$chunk_number" current_chunk_dirs[@] dir_token_counts[@] dir_names[@] dir_token_counts[@] dir_file_lists[@]
     fi
 }
 
@@ -467,31 +596,36 @@ write_directories_to_file() {
     local -n dir_tokens_ref="$4"
     local -n dir_files_ref="$5"
 
+    # Validate that we actually have directories to process
+    if [ ${#dirs_ref[@]} -eq 0 ]; then
+        print_error "No directories to process"
+        return 1
+    fi
+
     echo "# Project: $(basename "$PWD")" > "$output_file"
     echo "# Generated: $(date)" >> "$output_file"
     
-    # Add the full directory structure
     write_full_directory_structure "$output_file" dir_tokens_ref
     
-    # Now list the directories in this specific chunk
     echo "# Directories included in this chunk:" >> "$output_file"
-    for cdir in "${dirs_ref[@]}"; do
-        echo "#   $cdir (~${dir_tokens_ref["$cdir"]} tokens)" >> "$output_file"
+    for ((i=0; i<${#dirs_ref[@]}; i++)); do
+        local dir="${dirs_ref[i]}"
+        echo "#   $dir (~${dir_tokens_ref[i]} tokens)" >> "$output_file"
     done
     echo "---" >> "$output_file"
 
-    # Continue with the actual content...
     local processed_in_chunk=0
-    for cdir in "${dirs_ref[@]}"; do
-        echo -e "\n## Directory: $cdir" >> "$output_file"
+    for ((i=0; i<${#dirs_ref[@]}; i++)); do
+        local dir="${dirs_ref[i]}"
+        echo -e "\n## Directory: $dir" >> "$output_file"
         while IFS= read -r f; do
             [ -z "$f" ] && continue
             ((processed_in_chunk++))
             write_file_content "$f" "$output_file"
-        done <<< "${dir_files_ref["$cdir"]}"
+        done <<< "${dir_files_ref[i]}"
     done
 
-    print_info "Created: $(basename "$output_file") (tokens in chunk: $tokens_in_chunk, dirs: ${#dirs_ref[@]}, files: $processed_in_chunk)"
+    print_info "Created: $(basename "$output_file") (tokens: $tokens_in_chunk, dirs: ${#dirs_ref[@]}, files: $processed_in_chunk)"
 }
 
 # ---------------------------------------------------------
@@ -742,29 +876,56 @@ done
 
 # Print final summary
 print_summary
+validate_environment() {
+    # Check for empty directory
+    if [ -z "$(find . -type f -print -quit)" ]; then
+        print_error "No files found in directory"
+        exit 1
+    fi
 
-write_single_file() {
-    local -n dir_tokens_ref="$1"
-    local -n dir_files_ref="$2"
-    
-    print_status "Repository fits within token limit. Creating single consolidated file..."
-    local current_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}.txt"
-    
-    # Write header with full structure
-    echo "# Project: $(basename "$PWD")" > "$current_file"
-    echo "# Generated: $(date)" >> "$current_file"
-    write_full_directory_structure "$current_file" dir_tokens_ref
-    echo "---" >> "$current_file"
-    
-    # Write all files in directory order
-    for dir in "${!dir_files_ref[@]}"; do
-        echo -e "\n## Directory: $dir" >> "$current_file"
-        while IFS= read -r f; do
-            [ -z "$f" ] && continue
-            write_file_content "$f" "$current_file"
-        done <<< "${dir_files_ref[$dir]}"
+    # Validate output directory
+    if [ ! -w "$(dirname "$OUTPUT_DIR")" ]; then
+        print_error "Cannot write to output directory location: $OUTPUT_DIR"
+        exit 1
+    }
+
+    # Check for required tools
+    for cmd in find grep sed tr wc; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            print_error "Required command not found: $cmd"
+            exit 1
+        fi
     done
+}
+
+create_output_file() {
+    local name="$1"
+    local type="$2"  # main, chunk, sub-chunk
     
-    created_files+=("$current_file")
-    print_success "Created: $(basename "$current_file")"
+    local file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}"
+    case "$type" in
+        main)
+            file+=".txt"
+            ;;
+        chunk)
+            file+="-part${name}.txt"
+            ;;
+        sub-chunk)
+            file+="-part${name}-sub.txt"
+            ;;
+        *)
+            print_error "Invalid file type: $type"
+            return 1
+            ;;
+    esac
+    
+    # Use 'noclobber' in a subshell to safely create the file.
+    # This prevents overwriting if it already exists (race condition fix).
+    if ! (set -o noclobber; > "$file" 2>/dev/null); then
+        print_error "Output file already exists or cannot be created: $file"
+        return 1
+    fi
+    
+    created_files+=("$file")
+    echo "$file"
 }
