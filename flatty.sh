@@ -624,15 +624,15 @@ process_by_size() {
 # ==========================================================
 write_full_directory_structure() {
     local output_file="$1"
-    # We'll pass SCAN_DIR_TOKEN_COUNTS by name, but we access it directly
-    local -n dir_tokens_ref="$2"
-
+    # We'll use SCAN_DIR_TOKEN_COUNTS directly instead of passing by reference
+    
     echo -e "\n# Complete Repository Structure:" >> "$output_file"
     echo "# (showing all directories and their token counts)" >> "$output_file"
     
     local all_dirs=()
-    for d in "${!dir_tokens_ref[@]}"; do
-        all_dirs+=("$d")
+    # Use SCAN_DIR_NAMES directly since it matches with SCAN_DIR_TOKEN_COUNTS
+    for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
+        all_dirs+=("${SCAN_DIR_NAMES[i]}")
     done
     
     IFS=$'\n' sorted_dirs=($(sort <<< "${all_dirs[*]}"))
@@ -649,7 +649,16 @@ write_full_directory_structure() {
             indent="$indent  "
         done
         
-        echo "# ${indent}${parts[-1]}/ (~${dir_tokens_ref[$dir]} tokens)" >> "$output_file"
+        # Find the matching index in SCAN_DIR_NAMES to get token count
+        local dir_index
+        for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
+            if [ "${SCAN_DIR_NAMES[i]}" = "$dir" ]; then
+                dir_index=$i
+                break
+            fi
+        done
+        
+        echo "# ${indent}${parts[-1]}/ (~${SCAN_DIR_TOKEN_COUNTS[dir_index]} tokens)" >> "$output_file"
     done
     
     echo -e "#\n# Current Chunk Contains:" >> "$output_file"
