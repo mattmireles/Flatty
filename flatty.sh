@@ -538,7 +538,10 @@ chunk_directory_by_file() {
             print_info "Exceeded token limit in directory $dir, closing sub-chunk"
             echo "# End of sub-chunk for $dir" >> "$dir_chunk_file"
             ((file_counter++))
-            
+
+            # Add previous sub-chunk to the created_files array here to fix counting:
+            created_files+=("$dir_chunk_file")
+
             # Start new sub-chunk
             dir_chunk_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-part${file_counter}-$(echo "$dir" | sed 's|/|-|g' | tr -d ' ')-sub.txt"
             echo "# Project: $(basename "$PWD")" > "$dir_chunk_file"
@@ -551,6 +554,9 @@ chunk_directory_by_file() {
         dir_sub_tokens=$((dir_sub_tokens + f_tokens))
         ((created_subfiles++))
     done <<< "${dir_files_map["$dir"]}"
+
+    # When we exit the loop, add the final chunk file path to created_files as well:
+    created_files+=("$dir_chunk_file")
 
     print_info "Created: $(basename "$dir_chunk_file") (directory: $dir, files: $created_subfiles)"
 }
