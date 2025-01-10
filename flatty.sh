@@ -164,7 +164,7 @@ matches_patterns() {
 # ==========================================================
 create_output_file() {
     local name="$1"
-    local type="$2"  # main, chunk
+    local type="$2"  # main, chunk, sub-chunk
 
     local file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}"
     case "$type" in
@@ -334,25 +334,34 @@ process_by_directory() {
         local dir="${SCAN_DIR_NAMES[i]}"
         local dtokens="${SCAN_DIR_TOKEN_COUNTS[i]}"
         
-        if [ $(( current_chunk_tokens + dtokens )) -gt "$TOKEN_LIMIT" ]; then
+        # Handle large directories first
+        if [ "$dtokens" -gt "$TOKEN_LIMIT" ]; then
+            # Write any pending chunk before handling large directory
             if [ ${#current_chunk_dirs[@]} -gt 0 ]; then
                 write_chunk "$chunk_number" "${current_chunk_dirs[@]}" "$current_chunk_tokens"
                 ((chunk_number++))
                 current_chunk_dirs=()
                 current_chunk_tokens=0
             fi
-            
-            if [ "$dtokens" -gt "$TOKEN_LIMIT" ]; then
-                write_large_directory "$chunk_number" "$dir" "${SCAN_DIR_FILE_LISTS[i]}"
-                ((chunk_number++))
-                continue
-            fi
+            # Handle the large directory
+            write_large_directory "$chunk_number" "$dir" "$i"  # Pass index instead of file list
+            ((chunk_number++))
+            continue
+        }
+        
+        # Regular directory handling
+        if [ $(( current_chunk_tokens + dtokens )) -gt "$TOKEN_LIMIT" ] && [ ${#current_chunk_dirs[@]} -gt 0 ]; then
+            write_chunk "$chunk_number" "${current_chunk_dirs[@]}" "$current_chunk_tokens"
+            ((chunk_number++))
+            current_chunk_dirs=()
+            current_chunk_tokens=0
         fi
         
         current_chunk_dirs+=("$dir")
         current_chunk_tokens=$(( current_chunk_tokens + dtokens ))
     done
 
+    # Write final chunk if any directories remain
     if [ ${#current_chunk_dirs[@]} -gt 0 ]; then
         write_chunk "$chunk_number" "${current_chunk_dirs[@]}" "$current_chunk_tokens"
     fi
