@@ -347,7 +347,7 @@ process_by_directory() {
             write_large_directory "$chunk_number" "$dir" "$i"  # Pass index instead of file list
             ((chunk_number++))
             continue
-        }
+        fi
         
         # Regular directory handling
         if [ $(( current_chunk_tokens + dtokens )) -gt "$TOKEN_LIMIT" ] && [ ${#current_chunk_dirs[@]} -gt 0 ]; then
