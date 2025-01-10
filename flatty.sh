@@ -12,104 +12,43 @@ current_dir=$(basename "$(pwd)")
 current_date=$(date +%Y%m%d-%H%M%S)
 output_file="${output_dir}/${current_dir}-${current_date}-flattened.txt"
 
-separator="=================="
+# Set a unique separator
+separator="--__--__--__--__--__--__--__--__--__--__--__--__--__--__--__--__--__--"
 
-# Configuration flags
-INCLUDE_BUILD_FILES=1     # Include key build configuration files
-INCLUDE_DEPENDENCIES=1    # Include package manager configurations
-INCLUDE_COMMENTS=1        # Keep meaningful comments in source files
-INCLUDE_STRUCTURE=1       # Include folder structure analysis
+# Clear and initialize the output file
+{
+    echo "This is a flattened representation of source files."
+    echo "This file contains the most recent version of the source code at the time it was generated."
+    echo "This file is intended to be used as a knowledge base for an AI assistant."
+    echo "Image files and binary files have been excluded from the text content, but they are included in the tree listing."
+    echo "Files are separated by a unique marker: '$separator'"
+    echo "The filename is also separated from the file content using the unique marker"
+    echo "The date that this file was generated: $(date)"
+    echo "$separator"
+    echo "File Tree:"
 
-# Check if we're in a git repository
-if [ ! -d ".git" ]; then
-    echo "Warning: Not in a git repository root. Script should be run from project root."
-    read -p "Continue anyway? (y/n) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
-    fi
-fi
+    # File Tree using find
+    find . -not -path "./public/*" -not -name ".*" -not -name "*.swp" -not -name "$(basename "$output_file")" -print | sed 's/^\.\///' | sort
 
-# Clear output file
-> "$output_file"
+    echo "$separator"
 
-# Project Overview Section
-echo "# Project Structure Analysis" >> "$output_file"
-echo "Generated: $(date)" >> "$output_file"
-echo "$separator" >> "$output_file"
-
-# Generate structured overview
-if [ "$INCLUDE_STRUCTURE" -eq 1 ]; then
-    echo "## Directory Structure" >> "$output_file"
-    # Show meaningful structure while excluding noise
-    find . -type d \
-        -not -path "*/\.*" \
-        -not -path "*/DerivedData/*" \
-        -not -path "*/Build/*" \
-        -not -path "*/Pods/*" \
-        -not -path "*/xcuserdata/*" \
-        | sed 's/[^-][^\/]*\//  │   /g' \
-        | sed 's/│   \([^│]\)/├── \1/' >> "$output_file"
-    echo "$separator" >> "$output_file"
-fi
-
-# Process source files
-process_source_file() {
-    local file="$1"
-    echo "## File: $file" >> "$output_file"
-    
-    # Extract file type specific information
-    case "$file" in
-        *.swift)
-            # Extract class/struct definitions and protocol conformance
-            grep -E '^[[:space:]]*(class|struct|enum|protocol|extension)' "$file" >> "$output_file" 2>/dev/null || true
-            if [ "$INCLUDE_COMMENTS" -eq 1 ]; then
-                # Extract documentation comments (///), but skip routine comments (//)
-                grep -E '^\s*///' "$file" >> "$output_file" 2>/dev/null || true
+    # Loop through all the files, excluding the public folder and images
+    while IFS= read -r -d $'\n' file; do
+        if [[ ! "$file" =~ ^\./public/ ]] && [[ "$file" != "$output_file" ]]; then
+            if file "$file" | grep -qE '.*:.*text'; then
+                # remove "./" from filename
+                file="${file:2}"
+                echo "$separator"
+                echo "Filename: $file"
+                echo "$separator"
+                # Output the content of the file
+                cat "$file"
             fi
-            ;;
-        *.h)
-            # Extract interface definitions and public API
-            grep -E '^@(interface|protocol|property|public|private)' "$file" >> "$output_file" 2>/dev/null || true
-            ;;
-        Package.swift)
-            # Include entire dependency specification
-            cat "$file" >> "$output_file"
-            ;;
-        *.xcconfig)
-            # Include build configurations
-            grep -v '^\s*//' "$file" >> "$output_file" 2>/dev/null || true
-            ;;
-    esac
-    echo "$separator" >> "$output_file"
-}
-
-# Find and process relevant files
-find . -type f \( \
-    -name "*.swift" \
-    -o -name "*.h" \
-    -o -name "*.m" \
-    -o -name "Package.swift" \
-    -o -name "*.xcconfig" \
-    \) \
-    -not -path "*/DerivedData/*" \
-    -not -path "*/Build/*" \
-    -not -path "*/Pods/*" \
-    -not -path "*/\.*" \
-    | while read -r file; do
-        process_source_file "$file"
-    done
-
-# Include dependency management files if enabled
-if [ "$INCLUDE_DEPENDENCIES" -eq 1 ]; then
-    echo "## Dependencies" >> "$output_file"
-    for file in Package.swift Package.resolved Podfile Podfile.lock; do
-        if [ -f "$file" ]; then
-            echo "### $file" >> "$output_file"
-            cat "$file" >> "$output_file"
-            echo "$separator" >> "$output_file"
         fi
-    done
-fi
+    done < <(find . -type f -not -name ".*" -not -name "*.swp")
+
+    echo "$separator"
+    echo "End of File"
+} > "$output_file"
 
 echo "Analysis complete! Output saved to $output_file"
