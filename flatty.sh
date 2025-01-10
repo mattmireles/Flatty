@@ -624,32 +624,45 @@ process_by_size() {
 # ==========================================================
 write_full_directory_structure() {
     local output_file="$1"
-    # We'll use SCAN_DIR_TOKEN_COUNTS directly instead of passing by reference
     
     echo -e "\n# Complete Repository Structure:" >> "$output_file"
     echo "# (showing all directories and their token counts)" >> "$output_file"
     
-    local all_dirs=()
-    # Use SCAN_DIR_NAMES directly since it matches with SCAN_DIR_TOKEN_COUNTS
+    # First show root directory total
+    local root_tokens=0
     for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
-        all_dirs+=("${SCAN_DIR_NAMES[i]}")
+        if [ "${SCAN_DIR_NAMES[i]}" = "." ]; then
+            root_tokens=${SCAN_DIR_TOKEN_COUNTS[i]}
+            break
+        fi
     done
     
+    echo "# ./ (~${root_tokens} tokens)" >> "$output_file"
+    
+    # Collect and sort all non-root directories
+    local all_dirs=()
+    for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
+        if [ "${SCAN_DIR_NAMES[i]}" != "." ]; then
+            all_dirs+=("${SCAN_DIR_NAMES[i]}")
+        fi
+    done
+    
+    # Sort directories for consistent output
     IFS=$'\n' sorted_dirs=($(sort <<< "${all_dirs[*]}"))
     unset IFS
     
+    # Show subdirectories with proper indentation
     for dir in "${sorted_dirs[@]}"; do
-        [ "$dir" = "." ] && continue
-        
         IFS='/' read -ra parts <<< "$dir"
         local depth=$((${#parts[@]} - 1))
         
+        # Create indent based on directory depth
         local indent=""
         for ((i=0; i<depth; i++)); do
             indent="$indent  "
         done
         
-        # Find the matching index in SCAN_DIR_NAMES to get token count
+        # Find matching index for token count
         local dir_index
         for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
             if [ "${SCAN_DIR_NAMES[i]}" = "$dir" ]; then
