@@ -220,18 +220,84 @@ process_by_type() {
     done < <(find . -type f | sort)
 }
 
-# Function to process files by size
+# Add these helper functions near the top after the configuration
+print_status() {
+    echo "🔄 $1"
+}
+
+print_success() {
+    echo "✅ $1"
+}
+
+print_info() {
+    echo "ℹ️  $1"
+}
+
+# Add a function to calculate total tokens for initial assessment
+calculate_total_tokens() {
+    local total_tokens=0
+    local file_count=0
+    
+    print_status "Analyzing repository size..."
+    
+    while IFS= read -r -d $'\n' file; do
+        if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
+            ((file_count++))
+            total_tokens=$((total_tokens + $(estimate_tokens "$(cat "$file")")))
+            if [ "$VERBOSE" = true ]; then
+                echo "  Scanning: $file"
+            fi
+        fi
+    done < <(find . -type f | sort)
+    
+    print_info "Found $file_count files totaling approximately $total_tokens tokens"
+    echo "$total_tokens"
+}
+
+# Modify the process_by_size function to handle single-file case
 process_by_size() {
     local current_file=""
     local current_tokens=0
     local file_counter=1
+    local total_tokens
+    
+    total_tokens=$(calculate_total_tokens)
+    
+    # For small repos, use a single file
+    if [ "$total_tokens" -le "$TOKEN_LIMIT" ]; then
+        print_status "Repository fits within token limit. Creating single consolidated file..."
+        current_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}.txt"
+        
+        # Write header
+        echo "# Project: $(basename "$PWD")" > "$current_file"
+        echo "# Generated: $(date)" >> "$current_file"
+        echo "# Total Tokens: ~$total_tokens" >> "$current_file"
+        echo "---" >> "$current_file"
+        
+        local processed_files=0
+        while IFS= read -r -d $'\n' file; do
+            if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
+                ((processed_files++))
+                write_file_content "$file" "$current_file"
+                [ "$VERBOSE" = true ] && echo "Processing ($processed_files): $file"
+            fi
+        done < <(find . -type f | sort)
+        
+        print_success "Created: $(basename "$current_file")"
+        print_info "Location: $current_file"
+        return
+    fi
+    
+    # For larger repos, split into multiple files
+    print_status "Repository exceeds token limit. Splitting into multiple files..."
     
     while IFS= read -r -d $'\n' file; do
         if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
             # Start new file if token limit reached
             if [ $current_tokens -gt $TOKEN_LIMIT ]; then
+                print_info "Created: $(basename "$current_file") (tokens: $current_tokens)"
                 file_counter=$((file_counter + 1))
-                current_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-${file_counter}.txt"
+                current_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-part${file_counter}.txt"
                 current_tokens=0
                 
                 # Write header
@@ -243,7 +309,7 @@ process_by_size() {
             
             # If current_file is still empty (first file in the run), define it here
             if [ -z "$current_file" ]; then
-                current_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-${file_counter}.txt"
+                current_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-part${file_counter}.txt"
                 echo "# Project: $(basename "$PWD")" > "$current_file"
                 echo "# Part: $file_counter" >> "$current_file"
                 echo "# Generated: $(date)" >> "$current_file"
@@ -255,17 +321,29 @@ process_by_size() {
             [ "$VERBOSE" = true ] && echo "Processing: $file ($current_tokens tokens)"
         fi
     done < <(find . -type f | sort)
+    
+    print_success "Created $file_counter files:"
+    for ((i=1; i<=$file_counter; i++)); do
+        echo "  📄 $(basename "$PWD")-${RUN_TIMESTAMP}-part${i}.txt"
+    done
 }
 
 # Main execution
+print_status "Starting Flatty..."
+print_info "Output directory: $OUTPUT_DIR"
+[ "$VERBOSE" = true ] && print_info "Verbose mode enabled"
+
 case $GROUP_BY in
     "directory")
+        print_status "Processing by directory structure..."
         process_by_directory
         ;;
     "type")
+        print_status "Processing by file type..."
         process_by_type
         ;;
     "size")
+        print_status "Processing by size..."
         process_by_size
         ;;
     *)
@@ -274,5 +352,5 @@ case $GROUP_BY in
         ;;
 esac
 
-echo "✨ Processing complete!"
-echo "📊 Output saved to: $OUTPUT_DIR"
+print_success "Processing complete!"
+print_info "Files saved in: $OUTPUT_DIR"
