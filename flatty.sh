@@ -3,199 +3,276 @@
 # Exit on any error
 set -e
 
-# Initialize variables
+# Default configuration
 OUTPUT_DIR="$HOME/flattened"
-TMP_DIR="/tmp/flatty_$$"
-MAX_SIZE_MB=${MAX_SIZE_MB:-10}
-VERBOSE=${VERBOSE:-false}
+SEPARATOR="---"
+TOKEN_LIMIT=100000
+GROUP_BY="directory"  # directory, type, or size
+VERBOSE=false
 
-# Check dependencies
-if ! command -v jq &> /dev/null; then
-    echo "Error: jq is required but not installed. Please install it first:"
-    echo "  brew install jq"
-    exit 1
-fi
+# Help text
+show_help() {
+    cat << EOF
+Flatty - Convert directories into LLM-friendly text files
 
-# Create necessary directories
-mkdir -p "$OUTPUT_DIR" "$TMP_DIR"
+Usage: flatty [options] [patterns...]
 
-# Cleanup function
-cleanup() {
-    rm -rf "$TMP_DIR"
-    [ "$VERBOSE" = true ] && echo "Cleaned up temporary files"
-}
-trap cleanup EXIT
+Options:
+    -o, --output-dir DIR     Output directory (default: ~/flattened)
+    -g, --group-by MODE      Grouping mode:
+                            directory  - Group by directory structure (default)
+                            type       - Group by file type
+                            size       - Evenly split by token count
+    -i, --include PATTERN    Include only files matching pattern
+    -x, --exclude PATTERN    Exclude files matching pattern
+    -t, --tokens LIMIT       Target token limit per file (default: 100000)
+    -v, --verbose            Show detailed progress
+    -h, --help               Show this help message
 
-# Helper function to detect file type
-detect_file_type() {
-    case "$1" in
-        *.py) echo "python";;
-        *.js) echo "javascript";;
-        *.jsx) echo "jsx";;
-        *.ts) echo "typescript";;
-        *.tsx) echo "tsx";;
-        *.go) echo "go";;
-        *.rb) echo "ruby";;
-        *.php) echo "php";;
-        *.java) echo "java";;
-        *.scala) echo "scala";;
-        *.kt|*.kts) echo "kotlin";;
-        *.swift) echo "swift";;
-        *.c|*.h) echo "c";;
-        *.cpp|*.hpp|*.cc) echo "cpp";;
-        *.cs) echo "csharp";;
-        *.rs) echo "rust";;
-        *.sh|*.bash) echo "shell";;
-        *.html|*.htm) echo "html";;
-        *.css) echo "css";;
-        *.md|*.markdown) echo "markdown";;
-        *.json) echo "json";;
-        *.xml) echo "xml";;
-        *.yml|*.yaml) echo "yaml";;
-        *.txt) echo "text";;
-        *) echo "text";;  # Default to text for unknown types
-    esac
+Examples:
+    flatty                                    # Process current directory
+    flatty -i "*.swift" -i "*.h" -i "*.m"    # Only Swift and Obj-C files
+    flatty --group-by type                    # Group similar files together
+    flatty --group-by size -t 50000          # Even chunks of 50k tokens
+EOF
+    exit 0
 }
 
-# Helper function to detect MIME type and handle binary files
-get_file_info() {
-    local file="$1"
-    local mime_type
-    local file_type
-    local category
-    local size
-    
-    # Get MIME type using file command
-    mime_type=$(file --mime-type -b "$file")
-    size=$(stat -f%z "$file")
-    
-    # Categorize file
-    case "$mime_type" in
-        text/*|application/json|application/xml|application/x-yaml)
-            category="text"
-            file_type=$(detect_file_type "$file")
+# Parse command line arguments
+INCLUDE_PATTERNS=()
+EXCLUDE_PATTERNS=()
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            show_help
             ;;
-        image/*)
-            category="image"
-            file_type="${mime_type#image/}"
+        -o|--output-dir)
+            OUTPUT_DIR="$2"
+            shift 2
             ;;
-        audio/*)
-            category="audio"
-            file_type="${mime_type#audio/}"
+        -g|--group-by)
+            GROUP_BY="$2"
+            shift 2
             ;;
-        video/*)
-            category="video"
-            file_type="${mime_type#video/}"
+        -i|--include)
+            INCLUDE_PATTERNS+=("$2")
+            shift 2
             ;;
-        application/pdf)
-            category="document"
-            file_type="pdf"
+        -x|--exclude)
+            EXCLUDE_PATTERNS+=("$2")
+            shift 2
             ;;
-        application/*)
-            category="binary"
-            file_type="${mime_type#application/}"
+        -t|--tokens)
+            TOKEN_LIMIT="$2"
+            shift 2
+            ;;
+        -v|--verbose)
+            VERBOSE=true
+            shift
             ;;
         *)
-            category="other"
-            file_type="unknown"
+            INCLUDE_PATTERNS+=("$1")
+            shift
             ;;
     esac
-    
-    # Output JSON structure
-    cat << EOF
-    {
-      "path": "${file:2}",
-      "category": "$category",
-      "type": "$file_type",
-      "mime_type": "$mime_type",
-      "size": $size$([ "$category" = "text" ] && echo ',
-      "content": '"$(python3 -c "import json, sys; print(json.dumps(sys.stdin.read()))" < "$file")")
-    }
-EOF
+done
+
+# Create output directory
+mkdir -p "$OUTPUT_DIR"
+
+# Define a run-specific timestamp (human-readable, avoiding colons).
+RUN_TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
+
+# Helper function to estimate tokens
+estimate_tokens() {
+    local content="$1"
+    local char_count
+    char_count=$(echo "$content" | wc -c)
+    echo $((char_count / 4))  # Rough estimate: ~4 chars per token
 }
 
-# Function to generate type statistics
-generate_type_stats() {
-    local input_file="$1"
-    local total=0
-    local stats=""
+# Helper function to check if file matches patterns
+matches_patterns() {
+    local file="$1"
+    local matched=false
     
-    # Calculate stats for each category
-    for category in text binary image audio video document other; do
-        local count
-        count=$(jq -r ".files[] | select(.category == \"$category\") | .path" "$input_file" | wc -l | tr -d ' ')
-        total=$((total + count))
-        stats="${stats}      \"$category\": $count,
-"
-    done
+    # If no include patterns, match everything
+    if [ ${#INCLUDE_PATTERNS[@]} -eq 0 ]; then
+        matched=true
+    else
+        for pattern in "${INCLUDE_PATTERNS[@]}"; do
+            if [[ "$file" == $pattern ]]; then
+                matched=true
+                break
+            fi
+        done
+    fi
     
-    # Output the type_stats section
-    cat << EOF
-  "type_stats": {
-    "by_category": {
-${stats}      "total": $total
-    }
-  }
-EOF
+    # Check exclude patterns
+    if [ "$matched" = true ]; then
+        for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+            if [[ "$file" == $pattern ]]; then
+                matched=false
+                break
+            fi
+        done
+    fi
+    
+    [ "$matched" = true ]
 }
 
-# Main processing with enhanced file handling
-generate_json() {
-    local project_name=$(basename "$(pwd)")
-    local output_file="${OUTPUT_DIR}/${project_name}-$(date +%Y%m%d-%H%M%S).json"
-    local total_files=0
-    
-    # Start JSON structure
-    cat << EOF > "$output_file"
-{
-  "metadata": {
-    "name": "$project_name",
-    "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-    "generator": {
-      "name": "flatty",
-      "version": "1.0.0"
-    }
-  },
-EOF
+# Helper function to get file type group
+get_file_type_group() {
+    local file="$1"
+    case "$file" in
+        *.py|*.pyc) echo "python";;
+        *.js|*.jsx|*.ts|*.tsx) echo "javascript";;
+        *.go) echo "golang";;
+        *.rb) echo "ruby";;
+        *.java|*.class) echo "java";;
+        *.c|*.h) echo "c";;
+        *.cpp|*.hpp|*.cc) echo "cpp";;
+        *.swift) echo "swift";;
+        *.m|*.mm) echo "objective-c";;
+        *.html|*.htm) echo "html";;
+        *.css|*.scss|*.sass) echo "css";;
+        *.md|*.markdown) echo "docs";;
+        *.json|*.yaml|*.yml|*.toml) echo "config";;
+        *) echo "other";;
+    esac
+}
 
-    # Files section
-    echo '  "files": [' >> "$output_file"
+# Function to write file content
+write_file_content() {
+    local file="$1"
+    local output_file="$2"
     
-    # Process all files
-    local first_file=true
+    echo "$SEPARATOR" >> "$output_file"
+    echo "$file" >> "$output_file"
+    echo "$SEPARATOR" >> "$output_file"
+    cat "$file" >> "$output_file"
+    echo "" >> "$output_file"
+}
+
+# Function to process files by directory
+process_by_directory() {
+    local current_file=""
+    local current_tokens=0
+    local file_counter=1
+    local current_dir=""
+    
+    # First, group files by directory
     while IFS= read -r -d $'\n' file; do
-        ((total_files++))
-        
-        # Skip unwanted paths and files
-        if [[ "$file" =~ ^\./\. ]] || \
-           [[ "$file" =~ ^\./(node_modules|venv|target|build|dist)/ ]]; then
-            continue
+        if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
+            dir=$(dirname "$file")
+            
+            # Start new file if directory changes or token limit reached
+            if [ "$dir" != "$current_dir" ] || [ $current_tokens -gt $TOKEN_LIMIT ]; then
+                current_dir="$dir"
+                file_counter=$((file_counter + 1))
+                current_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-${file_counter}-${dir//\//-}.txt"
+                current_tokens=0
+                
+                # Write header
+                echo "# Project: $(basename "$PWD")" > "$current_file"
+                echo "# Directory: $dir" >> "$current_file"
+                echo "# Generated: $(date)" >> "$current_file"
+                echo "---" >> "$current_file"
+            fi
+            
+            write_file_content "$file" "$current_file"
+            current_tokens=$((current_tokens + $(estimate_tokens "$(cat "$file")")))
+            [ "$VERBOSE" = true ] && echo "Processing: $file ($current_tokens tokens)"
         fi
-        
-        # Add comma for all but first file
-        [ "$first_file" = true ] || echo "    ," >> "$output_file"
-        first_file=false
-        
-        # Get and write file info
-        get_file_info "$file" >> "$output_file"
-        
-    done < <(find . -type f)
+    done < <(find . -type f | sort)
+}
+
+# Function to process files by type
+process_by_type() {
+    local current_file=""
+    local current_tokens=0
+    local file_counter=1
+    local current_type=""
     
-    # Close files array and add stats
-    echo "  ]," >> "$output_file"
-    generate_type_stats "$output_file" >> "$output_file"
-    echo "}" >> "$output_file"
+    while IFS= read -r -d $'\n' file; do
+        if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
+            type=$(get_file_type_group "$file")
+            
+            # Start new file if type changes or token limit reached
+            if [ "$type" != "$current_type" ] || [ $current_tokens -gt $TOKEN_LIMIT ]; then
+                current_type="$type"
+                file_counter=$((file_counter + 1))
+                current_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-${file_counter}-${type}.txt"
+                current_tokens=0
+                
+                # Write header
+                echo "# Project: $(basename "$PWD")" > "$current_file"
+                echo "# Type: $type" >> "$current_file"
+                echo "# Generated: $(date)" >> "$current_file"
+                echo "---" >> "$current_file"
+            fi
+            
+            write_file_content "$file" "$current_file"
+            current_tokens=$((current_tokens + $(estimate_tokens "$(cat "$file")")))
+            [ "$VERBOSE" = true ] && echo "Processing: $file ($current_tokens tokens)"
+        fi
+    done < <(find . -type f | sort)
+}
+
+# Function to process files by size
+process_by_size() {
+    local current_file=""
+    local current_tokens=0
+    local file_counter=1
     
-    echo "✨ Analysis complete! Output saved to $output_file"
-    
-    # Show summary
-    echo "📊 File Categories:"
-    for category in text binary image audio video document other; do
-        count=$(jq -r ".type_stats.by_category.$category" "$output_file")
-        printf "%s: %d\n" "$category" "$count"
-    done
-    printf "Total: %d\n" "$(jq -r '.type_stats.by_category.total' "$output_file")"
+    while IFS= read -r -d $'\n' file; do
+        if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
+            # Start new file if token limit reached
+            if [ $current_tokens -gt $TOKEN_LIMIT ]; then
+                file_counter=$((file_counter + 1))
+                current_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-${file_counter}.txt"
+                current_tokens=0
+                
+                # Write header
+                echo "# Project: $(basename "$PWD")" > "$current_file"
+                echo "# Part: $file_counter" >> "$current_file"
+                echo "# Generated: $(date)" >> "$current_file"
+                echo "---" >> "$current_file"
+            fi
+            
+            # If current_file is still empty (first file in the run), define it here
+            if [ -z "$current_file" ]; then
+                current_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-${file_counter}.txt"
+                echo "# Project: $(basename "$PWD")" > "$current_file"
+                echo "# Part: $file_counter" >> "$current_file"
+                echo "# Generated: $(date)" >> "$current_file"
+                echo "---" >> "$current_file"
+            fi
+
+            write_file_content "$file" "$current_file"
+            current_tokens=$((current_tokens + $(estimate_tokens "$(cat "$file")")))
+            [ "$VERBOSE" = true ] && echo "Processing: $file ($current_tokens tokens)"
+        fi
+    done < <(find . -type f | sort)
 }
 
 # Main execution
-generate_json
+case $GROUP_BY in
+    "directory")
+        process_by_directory
+        ;;
+    "type")
+        process_by_type
+        ;;
+    "size")
+        process_by_size
+        ;;
+    *)
+        echo "Error: Invalid grouping mode: $GROUP_BY"
+        exit 1
+        ;;
+esac
+
+echo "✨ Processing complete!"
+echo "📊 Output saved to: $OUTPUT_DIR"
