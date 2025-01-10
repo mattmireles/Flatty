@@ -402,10 +402,11 @@ scan_repository() {
     fi
 }
 
-# Update process_by_directory to use new scanning logic
+# Update process_by_directory to use declare instead of local -A
 process_by_directory() {
-    local -A dir_tokens
-    local -A dir_files
+    # Declare associative arrays properly
+    declare -A dir_tokens
+    declare -A dir_files
     
     # Scan repository first
     scan_repository dir_tokens dir_files
