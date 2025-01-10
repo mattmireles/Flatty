@@ -439,64 +439,80 @@ write_chunk() {
 }
 
 write_large_directory() {
-    local file_counter="$1"
+    local chunk_number="$1"
     local dir="$2"
-    local dir_index="$3"  # Changed from file_list to dir_index
+    local dir_index="$3"
     
-    print_status "Directory '$dir' exceeds token limit, splitting at file level..."
+    # Validate directory actually needs splitting
+    local dir_tokens="${SCAN_DIR_TOKEN_COUNTS[$dir_index]}"
+    if [ "$dir_tokens" -le "$TOKEN_LIMIT" ]; then
+        print_error "Internal error: Directory $dir ($dir_tokens tokens) does not exceed token limit ($TOKEN_LIMIT)"
+        return 1
+    fi
     
-    local sub_tokens=0
-    local chunk_subfile_count=0
+    print_status "Directory '$dir' exceeds token limit ($dir_tokens tokens), splitting at file level..."
+    
+    # Create initial chunk
     local part_file
-    part_file=$(create_output_file "$file_counter" "chunk") || exit 1
+    part_file=$(create_output_file "$chunk_number" "chunk") || exit 1
     
-    [ "$VERBOSE" = true ] && print_info "Creating chunk for large directory: $dir"
-    
+    # Write headers
     echo "# Project: $(basename "$PWD")" > "$part_file"
     echo "# Generated: $(date)" >> "$part_file"
-    write_full_directory_structure "$part_file"
-    echo -e "\n# Splitting Large Directory:" >> "$part_file"
+    write_full_directory_structure "$part_file"  # Include full context
+    echo -e "\n# Large Directory Split:" >> "$part_file"
     echo "#   ${dir}" >> "$part_file"
-    echo "# Into Multiple Chunks" >> "$part_file"
+    echo "#   Total Tokens: ~$dir_tokens" >> "$part_file"
+    echo "# Chunk $chunk_number" >> "$part_file"
     echo "---" >> "$part_file"
     
+    # Track chunk contents
+    local current_tokens=0
+    local file_count=0
+    
+    # Process files
     while IFS= read -r f; do
         [ -z "$f" ] && continue
         local f_tokens
         f_tokens=$(estimate_tokens "$(cat "$f")")
         
-        if ! [[ "$f_tokens" =~ ^[0-9]+$ ]]; then
-            print_error "Invalid token count for file $f: $f_tokens"
-            continue
-        fi
-        
-        if [ $((sub_tokens + f_tokens)) -gt "$TOKEN_LIMIT" ] && [ "$sub_tokens" -gt 0 ]; then
-            print_info "Chunk for $dir complete. (tokens: $sub_tokens, files: $chunk_subfile_count)"
-            ((file_counter++))
-            sub_tokens=0
-            chunk_subfile_count=0
-            part_file=$(create_output_file "$file_counter" "chunk") || exit 1
+        # If adding this file would exceed limit, start new chunk
+        if [ $((current_tokens + f_tokens)) -gt "$TOKEN_LIMIT" ] && [ "$current_tokens" -gt 0 ]; then
+            created_files+=("$part_file")
+            print_info "Created chunk: $(basename "$part_file") (tokens: $current_tokens, files: $file_count)"
             
-            [ "$VERBOSE" = true ] && print_info "Creating continuation chunk $file_counter"
+            # Start new chunk
+            ((chunk_number++))
+            part_file=$(create_output_file "$chunk_number" "chunk") || exit 1
             
+            # Reset counters
+            current_tokens=0
+            file_count=0
+            
+            # Write headers for new chunk
             echo "# Project: $(basename "$PWD")" > "$part_file"
             echo "# Generated: $(date)" >> "$part_file"
             write_full_directory_structure "$part_file"
-            echo -e "\n# Splitting Large Directory (Continued):" >> "$part_file"
+            echo -e "\n# Large Directory Split (Continued):" >> "$part_file"
             echo "#   ${dir}" >> "$part_file"
-            echo "# Chunk $file_counter" >> "$part_file"
+            echo "#   Total Tokens: ~$dir_tokens" >> "$part_file"
+            echo "# Chunk $chunk_number" >> "$part_file"
             echo "---" >> "$part_file"
         fi
         
+        # Add file to current chunk
         write_file_content "$f" "$part_file"
-        sub_tokens=$((sub_tokens + f_tokens))
-        ((chunk_subfile_count++))
+        current_tokens=$((current_tokens + f_tokens))
+        ((file_count++))
         [ "$VERBOSE" = true ] && print_info "  Added: $f ($f_tokens tokens)"
         
-    done <<< "${SCAN_DIR_FILE_LISTS[$dir_index]}"  # Use file list from global array
-
-    created_files+=("$part_file")
-    print_info "Created chunk: $(basename "$part_file") (directory: $dir, files: $chunk_subfile_count, tokens: $sub_tokens)"
+    done <<< "${SCAN_DIR_FILE_LISTS[$dir_index]}"
+    
+    # Save final chunk if it has content
+    if [ "$file_count" -gt 0 ]; then
+        created_files+=("$part_file")
+        print_info "Created final chunk: $(basename "$part_file") (tokens: $current_tokens, files: $file_count)"
+    fi
 }
 
 
