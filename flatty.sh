@@ -367,45 +367,60 @@ process_by_directory() {
 # ==========================================================
 write_chunk() {
     local chunk_number="$1"
-    # “current_chunk_dirs” is passed as an array name, but we treat it as a simple list here
-    local -a dirs_list=("${@:2:${#@}-2}")  # all arguments except first & last
-    local total_chunk_tokens="${@: -1}"    # last argument
+    shift  # Remove chunk number from args
     
+    # Get total tokens (last argument)
+    local total_chunk_tokens="${@: -1}"
+    # Remove total tokens from args, leaving only directory list
+    set -- "${@:1:$#-1}"
+    
+    # Now $@ contains only the directory list, safely preserving spaces
     local output_file
     output_file=$(create_output_file "$chunk_number" "chunk") || exit 1
+    
+    [ "$VERBOSE" = true ] && print_info "Creating chunk $chunk_number with $(($#)) directories"
     
     echo "# Project: $(basename "$PWD")" > "$output_file"
     echo "# Generated: $(date)" >> "$output_file"
     echo "# Chunk: $chunk_number" >> "$output_file"
     echo -e "\n# Complete Repository Structure:" >> "$output_file"
-    write_full_directory_structure "$output_file" SCAN_DIR_TOKEN_COUNTS
+    write_full_directory_structure "$output_file"
     
     echo -e "\n# Current Chunk Contains:" >> "$output_file"
-    for dir in "${dirs_list[@]}"; do
+    for dir in "$@"; do
         echo "#   $dir" >> "$output_file"
+        [ "$VERBOSE" = true ] && print_info "  Including directory: $dir"
     done
+    
+    # Validate token count
+    if ! [[ "$total_chunk_tokens" =~ ^[0-9]+$ ]] || [ "$total_chunk_tokens" -gt "$TOKEN_LIMIT" ]; then
+        print_error "Invalid token count for chunk: $total_chunk_tokens"
+        return 1
+    fi
     
     echo -e "\n# Total tokens in chunk: ~$total_chunk_tokens" >> "$output_file"
     echo "---" >> "$output_file"
 
     local chunk_file_count=0
-    for dir in "${dirs_list[@]}"; do
+    for dir in "$@"; do
         echo -e "\n## Directory: $dir" >> "$output_file"
         
         # find its index in SCAN_DIR_NAMES
         local found_index=-1
-        for idx in "${!SCAN_DIR_NAMES[@]}"; do
-            if [ "${SCAN_DIR_NAMES[$idx]}" = "$dir" ]; then
+        for ((idx=0; idx<${#SCAN_DIR_NAMES[@]}; idx++)); do
+            if [ "${SCAN_DIR_NAMES[idx]}" = "$dir" ]; then
                 found_index=$idx
                 break
             fi
         done
         
         if [ "$found_index" -ge 0 ]; then
+            [ "$VERBOSE" = true ] && print_info "  Processing files from: $dir"
             while IFS= read -r f; do
                 [ -z "$f" ] && continue
                 ((chunk_file_count++))
                 write_file_content "$f" "$output_file"
+                [ "$VERBOSE" = true ] && print_info "    Added: $f"
             done <<< "${SCAN_DIR_FILE_LISTS[$found_index]}"
         fi
     done
@@ -413,7 +428,6 @@ write_chunk() {
     created_files+=("$output_file")
     print_info "Created chunk $chunk_number: $(basename "$output_file") (tokens: $total_chunk_tokens, files: $chunk_file_count)"
 }
-
 
 write_large_directory() {
     local file_counter="$1"
@@ -425,11 +439,14 @@ write_large_directory() {
     local sub_tokens=0
     local chunk_subfile_count=0
     local part_file
-    part_file=$(create_output_file "$file_counter" "sub-chunk") || exit 1
+    # Changed to match naming convention
+    part_file=$(create_output_file "$file_counter" "chunk") || exit 1
+    
+    [ "$VERBOSE" = true ] && print_info "Creating sub-chunk for large directory: $dir"
     
     echo "# Project: $(basename "$PWD")" > "$part_file"
     echo "# Generated: $(date)" >> "$part_file"
-    write_full_directory_structure "$part_file" SCAN_DIR_TOKEN_COUNTS
+    write_full_directory_structure "$part_file"
     echo -e "\n# Splitting Large Directory:" >> "$part_file"
     echo "#   ${dir}" >> "$part_file"
     echo "# Into Multiple Chunks" >> "$part_file"
@@ -440,16 +457,24 @@ write_large_directory() {
         local f_tokens
         f_tokens=$(estimate_tokens "$(cat "$f")")
         
+        # Validate token count for each file
+        if ! [[ "$f_tokens" =~ ^[0-9]+$ ]]; then
+            print_error "Invalid token count for file $f: $f_tokens"
+            continue
+        }
+        
         if [ $((sub_tokens + f_tokens)) -gt "$TOKEN_LIMIT" ] && [ "$sub_tokens" -gt 0 ]; then
             print_info "Sub-chunk for $dir complete. (tokens: $sub_tokens, files: $chunk_subfile_count)"
             ((file_counter++))
             sub_tokens=0
             chunk_subfile_count=0
-            part_file=$(create_output_file "$file_counter" "sub-chunk") || exit 1
+            part_file=$(create_output_file "$file_counter" "chunk") || exit 1
+            
+            [ "$VERBOSE" = true ] && print_info "Creating continuation chunk $file_counter"
             
             echo "# Project: $(basename "$PWD")" > "$part_file"
             echo "# Generated: $(date)" >> "$part_file"
-            write_full_directory_structure "$part_file" SCAN_DIR_TOKEN_COUNTS
+            write_full_directory_structure "$part_file"
             echo -e "\n# Splitting Large Directory (Continued):" >> "$part_file"
             echo "#   ${dir}" >> "$part_file"
             echo "# Chunk $file_counter" >> "$part_file"
@@ -459,6 +484,7 @@ write_large_directory() {
         write_file_content "$f" "$part_file"
         sub_tokens=$((sub_tokens + f_tokens))
         ((chunk_subfile_count++))
+        [ "$VERBOSE" = true ] && print_info "  Added: $f ($f_tokens tokens)"
         
     done <<< "$file_list"
 
