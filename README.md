@@ -6,6 +6,8 @@ Transform any GitHub repo or folder on your Mac into a simple text file so that 
 
 LLMs like ChatGPT and Claude let you upload files, but they limit how many you can upload at once. When you're dealing with large codebases that have tons of files, you can't just upload them directly to an LLM. You end up having to use RAG (retrieval augmented generation) techniques, which in my experience aren't as effective as uploading everything into the full context window - especially when you need to reason about architecture or understand the entire system. See [example](https://github.com/mattmireles/Flatty/blob/main/flatty-2025-01-10_12-57-33.txt).
 
+Coding assistants like Cursor are amazeballs, but they work better for day-to-day code completion and inline edits than they do for higher-level system understanding. 
+
 ## Installation
 
 You can install Flatty using the provided installer script:
