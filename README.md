@@ -1,4 +1,4 @@
-# Flatty - Codebase-to-Text for LLM Analysis
+# Flatty - Codebase-to-Text for LLMs
 
 Transform any GitHub repo or folder on your Mac into a simple text file so that you can upload it to an LLM (Claude, ChatGPT, etc.) to reason over the whole thing in the context window.
 
