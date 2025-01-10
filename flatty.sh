@@ -1,7 +1,17 @@
 #!/bin/bash
 
-# Exit on any error
+# Exit on any error and failed pipes
 set -e
+set -o pipefail
+
+# Error handler
+handle_error() {
+    local line_no=$1
+    local error_code=$2
+    echo "❌ Error on line ${line_no}: Command exited with status ${error_code}"
+    exit 1
+}
+trap 'handle_error ${LINENO} $?' ERR
 
 # Default configuration
 OUTPUT_DIR="$HOME/flattened"
@@ -9,6 +19,9 @@ SEPARATOR="---"
 TOKEN_LIMIT=100000
 GROUP_BY="directory"  # directory, type, or size
 VERBOSE=false
+
+# Array to track created files
+declare -a created_files=()
 
 # Default exclude patterns for common non-source directories
 DEFAULT_EXCLUDES=("*.git/*" "*.DS_Store" "*node_modules/*" "*.swiftpm/*")
@@ -24,6 +37,10 @@ print_success() {
 
 print_info() {
     echo "ℹ️  $1"
+}
+
+print_error() {
+    echo "❌ $1" >&2
 }
 
 # Add a function to calculate total tokens for initial assessment
@@ -114,6 +131,12 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Validate token limit
+if [[ ! "$TOKEN_LIMIT" =~ ^[0-9]+$ ]] || [ "$TOKEN_LIMIT" -lt 1000 ]; then
+    print_error "Token limit must be a positive number >= 1000"
+    exit 1
+fi
 
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
@@ -222,30 +245,34 @@ build_chunk_filename() {
 # ---------------------------------------
 write_chunk() {
     local chunk_number="$1"
-    local -a current_dirs=("${!2}")         # We pass current_dirs by name
-    local -a current_dir_tokens=("${!3}")   # We pass current_dir_tokens by name
-    local -a dir_names_ref=("${!4}")        # Full list of directory names
-    local -a dir_token_counts_ref=("${!5}") # Full list of directory token counts
-    local -a dir_file_lists_ref=("${!6}")   # Full list of file lists
+    local -a current_dirs=("${!2}")
+    local -a current_dir_tokens=("${!3}")
+    local -a dir_names_ref=("${!4}")
+    local -a dir_token_counts_ref=("${!5}")
+    local -a dir_file_lists_ref=("${!6}")
 
-    # Build an output file name that includes some directory info
     local output_file
     output_file=$(build_chunk_filename "$chunk_number" "${current_dirs[@]}" "false")
-    
-    # Write header
-    echo "# Project: $(basename "$PWD")" > "$output_file"
-    echo "# Generated: $(date)" >> "$output_file"
     local total_chunk_tokens=0
     
-    # Summarize directories in this chunk
-    echo "# Directories in this chunk:" >> "$output_file"
+    # Write initial header
+    echo "# Project: $(basename "$PWD")" > "$output_file"
+    echo "# Generated: $(date)" >> "$output_file"
+    echo "# Chunk: $chunk_number" >> "$output_file"
+    
+    # Write complete repository structure
+    write_full_directory_structure "$output_file" dir_token_counts_ref
+    
+    # Write chunk-specific directory information
+    echo -e "\n# Current Chunk Contains:" >> "$output_file"
     for i in "${!current_dirs[@]}"; do
         local dir="${current_dirs[$i]}"
         local dtokens="${current_dir_tokens[$i]}"
-        echo "#   $dir (~${dtokens} tokens)" >> "$output_file"
+        echo "#   ${dir}/ (~${dtokens} tokens)" >> "$output_file"
         total_chunk_tokens=$((total_chunk_tokens + dtokens))
     done
     
+    echo -e "\n# Total tokens in chunk: ~$total_chunk_tokens" >> "$output_file"
     echo "---" >> "$output_file"
 
     # Write out the actual files
@@ -288,36 +315,50 @@ write_large_directory() {
     local file_counter="$1"
     local dir="$2"
     local file_list="$3"
+    local -n dir_tokens_ref="$4"
     
     print_status "Directory '$dir' exceeds token limit, splitting at file level..."
     
-    # We'll chunk the files in that directory
     local sub_tokens=0
     local chunk_subfile_count=0
     local part_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-part${file_counter}-$(echo "$dir" | sed 's|/|-|g' | tr -d ' ')-sub.txt"
     
-    # Write chunk header
+    # Write complete header with repository structure
     echo "# Project: $(basename "$PWD")" > "$part_file"
     echo "# Generated: $(date)" >> "$part_file"
-    echo "# Directory: $dir (exceeds token limit, splitting files)" >> "$part_file"
+    
+    # Write full repository structure
+    write_full_directory_structure "$part_file" dir_tokens_ref
+    
+    # Write large directory split information
+    echo -e "\n# Splitting Large Directory:" >> "$part_file"
+    echo "#   ${dir}/ (~${dir_tokens_ref[$dir]} tokens)" >> "$part_file"
+    echo "# Into Multiple Chunks" >> "$part_file"
     echo "---" >> "$part_file"
 
-    # Read each file in this directory
+    # Process files in chunks
     while IFS= read -r f; do
         [ -z "$f" ] && continue
         local f_tokens
         f_tokens=$(estimate_tokens "$(cat "$f")")
         
         if [ $((sub_tokens + f_tokens)) -gt "$TOKEN_LIMIT" ] && [ "$sub_tokens" -gt 0 ]; then
-            # we finalize the current sub-chunk and start a new one
+            # Finalize current sub-chunk
             print_info "Sub-chunk for $dir complete. (tokens: $sub_tokens, files: $chunk_subfile_count)"
             ((file_counter++))
+            
+            # Start new sub-chunk
             sub_tokens=0
             chunk_subfile_count=0
             part_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-part${file_counter}-$(echo "$dir" | sed 's|/|-|g' | tr -d ' ')-sub.txt"
+            
+            # Write header for new sub-chunk
             echo "# Project: $(basename "$PWD")" > "$part_file"
             echo "# Generated: $(date)" >> "$part_file"
-            echo "# Directory: $dir (continuation)" >> "$part_file"
+            write_full_directory_structure "$part_file" dir_tokens_ref
+            echo -e "\n# Splitting Large Directory (Continued):" >> "$part_file"
+            echo "#   ${dir}/ (~${dir_tokens_ref[$dir]} tokens)" >> "$part_file"
+            echo "# Chunk $file_counter" >> "$part_file"
             echo "---" >> "$part_file"
         fi
         
@@ -327,150 +368,92 @@ write_large_directory() {
         
     done <<< "$file_list"
     
-    # Track each sub-chunk
     created_files+=("$part_file")
-    
     print_info "Created sub-chunk: $(basename "$part_file") (directory: $dir, files: $chunk_subfile_count, tokens: $sub_tokens)"
 }
 
-# ---------------------------------------
-# Smart directory-based processing
-# ---------------------------------------
-process_by_directory() {
-    local current_file=""
-    local current_tokens=0
-    local file_counter=0
-    local total_files=0
-    local processed_files=0
-    local -a created_files=()
-    local total_tokens=0
+# Add new scan_repository function
+scan_repository() {
+    local -n dir_tokens_map="$1"
+    local -n dir_files_map="$2"
     
-    # Instead of associative arrays, we'll use parallel arrays
-    local dir_names=()
-    local dir_token_counts=()
-    local dir_file_lists=()
+    print_status "Scanning repository structure..."
     
-    print_status "Analyzing repository size..."
-    
-    # Gather files and track tokens by directory
     while IFS= read -r -d $'\n' file; do
         if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
-            ((total_files++))
             local dir
             dir="$(dirname "$file")"
             local tokens
             tokens=$(estimate_tokens "$(cat "$file")")
-            total_tokens=$((total_tokens + tokens))
             
-            # Find or create directory entry
-            local dir_index=-1
-            for i in "${!dir_names[@]}"; do
-                if [ "${dir_names[$i]}" = "$dir" ]; then
-                    dir_index=$i
-                    break
-                fi
-            done
+            # Initialize arrays if needed
+            dir_tokens_map["$dir"]=$((${dir_tokens_map["$dir"]:-0} + tokens))
+            dir_files_map["$dir"]="${dir_files_map["$dir"]:-}${file}"$'\n'
             
-            if [ $dir_index -eq -1 ]; then
-                # New directory
-                dir_names+=("$dir")
-                dir_token_counts+=($tokens)
-                dir_file_lists+=("$file")
-            else
-                # Existing directory
-                dir_token_counts[$dir_index]=$((dir_token_counts[$dir_index] + tokens))
-                dir_file_lists[$dir_index]="${dir_file_lists[$dir_index]}"$'\n'"$file"
-            fi
+            [ "$VERBOSE" = true ] && echo "  Scanning: $file (${tokens} tokens)"
         fi
     done < <(find . -type f | sort)
     
-    print_info "Found $total_files files totaling approximately $total_tokens tokens"
-    
-    # If entire repo fits in a single file
-    if [ "$total_tokens" -le "$TOKEN_LIMIT" ]; then
-        print_status "Repository fits within token limit. Creating single consolidated file..."
-        current_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}.txt"
-        
-        # Write header
-        echo "# Project: $(basename "$PWD")" > "$current_file"
-        echo "# Generated: $(date)" >> "$current_file"
-        echo "# Total Tokens: ~$total_tokens" >> "$current_file"
-        echo "---" >> "$current_file"
-        
-        # Write all files
-        for i in "${!dir_names[@]}"; do
-            local dir="${dir_names[$i]}"
-            echo -e "\n## Directory: $dir" >> "$current_file"
-            while IFS= read -r f; do
-                [ -z "$f" ] && continue
-                ((processed_files++))
-                write_file_content "$f" "$current_file"
-            done <<< "${dir_file_lists[$i]}"
+    if [ "$VERBOSE" = true ]; then
+        echo -e "\nDirectory Structure:"
+        for dir in "${!dir_tokens_map[@]}"; do
+            echo "  $dir: ${dir_tokens_map[$dir]} tokens"
         done
-        
-        print_success "Created: $(basename "$current_file")"
-        print_info "Location: $current_file"
+    fi
+}
+
+# Update process_by_directory to use new scanning logic
+process_by_directory() {
+    local -A dir_tokens
+    local -A dir_files
+    
+    # Scan repository first
+    scan_repository dir_tokens dir_files
+    
+    # Calculate total tokens
+    local total_tokens=0
+    for dir in "${!dir_tokens[@]}"; do
+        total_tokens=$((total_tokens + dir_tokens["$dir"]))
+    done
+    
+    print_info "Found ${#dir_files[@]} directories totaling approximately $total_tokens tokens"
+    
+    # Handle single-file case
+    if [ "$total_tokens" -le "$TOKEN_LIMIT" ]; then
+        write_single_file dir_tokens dir_files
         return
     fi
     
-    print_status "Repository exceeds token limit. Creating logically grouped files..."
+    # Process in chunks
+    local current_chunk_dirs=()
+    local current_chunk_tokens=0
+    local chunk_number=1
     
-    # Create sorted directory list by tokens
-    local sorted_indices=()
-    for i in "${!dir_names[@]}"; do
-        sorted_indices+=("$i ${dir_token_counts[$i]}")
-    done
-    IFS=$'\n' sorted_indices=($(printf "%s\n" "${sorted_indices[@]}" | sort -rn -k2))
-    unset IFS
-    
-    current_tokens=0
-    file_counter=1
-    local current_dirs=()
-    local current_dir_tokens=()
-    
-    # Process directories in order of size
-    for entry in "${sorted_indices[@]}"; do
-        local idx="${entry%% *}"
-        local dir="${dir_names[$idx]}"
-        local dir_tokens="${dir_token_counts[$idx]}"
-        
-        if [ $((current_tokens + dir_tokens)) -le "$TOKEN_LIMIT" ]; then
-            current_tokens=$((current_tokens + dir_tokens))
-            current_dirs+=("$dir")
-            current_dir_tokens+=($dir_tokens)
-        else
-            # Write current chunk if we have any directories
-            if [ ${#current_dirs[@]} -gt 0 ]; then
-                write_chunk "$file_counter" current_dirs current_dir_tokens dir_names dir_token_counts dir_file_lists
-                created_files+=("$current_file")
-                ((file_counter++))
-                current_dirs=()
-                current_dir_tokens=()
-                current_tokens=0
+    for dir in "${!dir_files[@]}"; do
+        if [ $((current_chunk_tokens + dir_tokens["$dir"])) -gt "$TOKEN_LIMIT" ]; then
+            if [ ${#current_chunk_dirs[@]} -gt 0 ]; then
+                write_chunk "$chunk_number" current_chunk_dirs[@] dir_tokens[@] dir_files[@]
+                ((chunk_number++))
+                current_chunk_dirs=()
+                current_chunk_tokens=0
             fi
             
-            # Handle directory that wouldn't fit
-            if [ "$dir_tokens" -gt "$TOKEN_LIMIT" ]; then
-                write_large_directory "$file_counter" "$dir" "${dir_file_lists[$idx]}"
-                ((file_counter++))
-            else
-                current_tokens=$dir_tokens
-                current_dirs=("$dir")
-                current_dir_tokens=($dir_tokens)
+            # Handle large directories
+            if [ "${dir_tokens["$dir"]}" -gt "$TOKEN_LIMIT" ]; then
+                write_large_directory "$chunk_number" "$dir" "${dir_files["$dir"]}" dir_tokens
+                ((chunk_number++))
+                continue
             fi
         fi
+        
+        current_chunk_dirs+=("$dir")
+        current_chunk_tokens=$((current_chunk_tokens + dir_tokens["$dir"]))
     done
     
-    # Write final chunk if any directories remain
-    if [ ${#current_dirs[@]} -gt 0 ]; then
-        write_chunk "$file_counter" current_dirs current_dir_tokens dir_names dir_token_counts dir_file_lists
-        created_files+=("$current_file")
+    # Write final chunk if needed
+    if [ ${#current_chunk_dirs[@]} -gt 0 ]; then
+        write_chunk "$chunk_number" current_chunk_dirs[@] dir_tokens[@] dir_files[@]
     fi
-    
-    print_success "Created $file_counter files total"
-    for output_file in "${created_files[@]}"; do
-        echo "  📄 $(basename "$output_file")"
-    done
 }
 
 # ---------------------------------------------------------
@@ -707,6 +690,23 @@ write_full_directory_structure() {
     echo -e "#\n# Current Chunk Contains:" >> "$output_file"
 }
 
+print_summary() {
+    local total_tokens=0
+    local total_files=0
+    
+    for file in "${created_files[@]}"; do
+        local tokens=$(grep -m 1 "tokens" "$file" | grep -o "[0-9]\+")
+        local files=$(grep -c "^---$" "$file")
+        total_tokens=$((total_tokens + tokens))
+        total_files=$((total_files + files))
+    done
+    
+    echo -e "\nProcessing Summary:"
+    echo "Total Tokens: ~$total_tokens"
+    echo "Total Files Processed: $total_files"
+    echo "Output Files Created: ${#created_files[@]}"
+}
+
 # Main execution
 print_status "Starting Flatty..."
 print_info "Output directory: $OUTPUT_DIR"
@@ -736,5 +736,34 @@ print_info "Files saved in: $OUTPUT_DIR"
 
 print_success "Created ${#created_files[@]} files:"
 for file in "${created_files[@]}"; do
-    echo "  📄 $file"
+    echo "  📄 $(basename "$file")"
 done
+
+# Print final summary
+print_summary
+
+write_single_file() {
+    local -n dir_tokens_ref="$1"
+    local -n dir_files_ref="$2"
+    
+    print_status "Repository fits within token limit. Creating single consolidated file..."
+    local current_file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}.txt"
+    
+    # Write header with full structure
+    echo "# Project: $(basename "$PWD")" > "$current_file"
+    echo "# Generated: $(date)" >> "$current_file"
+    write_full_directory_structure "$current_file" dir_tokens_ref
+    echo "---" >> "$current_file"
+    
+    # Write all files in directory order
+    for dir in "${!dir_files_ref[@]}"; do
+        echo -e "\n## Directory: $dir" >> "$current_file"
+        while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            write_file_content "$f" "$current_file"
+        done <<< "${dir_files_ref[$dir]}"
+    done
+    
+    created_files+=("$current_file")
+    print_success "Created: $(basename "$current_file")"
+}
