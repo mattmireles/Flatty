@@ -666,11 +666,17 @@ write_full_directory_structure() {
     
     # 6. Print subdirectories with indentation + file lists
     for dir in "${sorted_dirs[@]}"; do
-        IFS='/' read -ra parts <<< "$dir"
-        local depth=$((${#parts[@]} - 1))
+        # Safely split directory path and get depth
+        local dir_parts
+        IFS='/' read -ra dir_parts <<< "$dir"
+        local depth=0
+        if [ ${#dir_parts[@]} -gt 0 ]; then
+            depth=${#dir_parts[@]}
+        fi
         
+        # Create indent based on depth
         local indent=""
-        for ((n=0; n<depth; n++)); do
+        for ((n=0; n<depth-1; n++)); do
             indent="$indent  "
         done
         
@@ -683,9 +689,9 @@ write_full_directory_structure() {
             fi
         done
         
-        # Print subdir's token count
+        # Print subdir's token count (using basename for directory name)
         if [ "$dir_index" -ge 0 ]; then
-            echo "# ${indent}${parts[-1]}/ (~${SCAN_DIR_TOKEN_COUNTS[dir_index]} tokens)" >> "$output_file"
+            echo "# ${indent}$(basename "$dir")/ (~${SCAN_DIR_TOKEN_COUNTS[dir_index]} tokens)" >> "$output_file"
             
             # List each file in that subdirectory
             while IFS= read -r file; do
