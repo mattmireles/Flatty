@@ -345,7 +345,7 @@ process_by_directory() {
                 ((chunk_number++))
                 current_chunk_dirs=()
                 current_chunk_tokens=0
-            }
+            fi
             # Handle the large directory
             write_large_directory "$chunk_number" "$dir" "$i"
             ((chunk_number++))
