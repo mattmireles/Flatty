@@ -204,30 +204,13 @@ write_file_content() {
 # ---------------------------------------
 build_chunk_filename() {
     local chunk_number=$1
-    shift
-    local dirs=("$@")
+    local dir="$2"
     
-    # If there's only one directory in this chunk, just use that dir’s name
-    if [ ${#dirs[@]} -eq 1 ]; then
-        local safe_dirname=$(echo "${dirs[0]}" | sed 's|/|-|g' | tr -d ' ')
-        echo "${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-part${chunk_number}-${safe_dirname}.txt"
-        return
-    fi
+    # Clean up directory name for filename
+    local safe_dirname=$(echo "$dir" | sed 's|^\./||' | sed 's|/|-|g' | tr -d ' ')
     
-    # If there are multiple directories, combine the first couple
-    # and then indicate if there are more
-    local first=$(echo "${dirs[0]}" | sed 's|/|-|g' | tr -d ' ')
-    local second=""
-    [ ${#dirs[@]} -ge 2 ] && second=$(echo "${dirs[1]}" | sed 's|/|-|g' | tr -d ' ')
-    
-    if [ ${#dirs[@]} -eq 2 ]; then
-        # Exactly two directories
-        echo "${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-part${chunk_number}-${first}+${second}.txt"
-    else
-        # More than two
-        local remain=$(( ${#dirs[@]} - 2 ))
-        echo "${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-part${chunk_number}-${first}+${second}+and${remain}more.txt"
-    fi
+    # Build the filename
+    echo "${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}-part${chunk_number}-${safe_dirname}.txt"
 }
 
 # ---------------------------------------
@@ -287,11 +270,10 @@ write_chunk() {
         fi
     done
     
-    # Print out some final info to the terminal
-    print_info "Created: $(basename "$output_file") (tokens in chunk: $total_chunk_tokens, dirs: ${#current_dirs[@]}, files: $chunk_file_count)"
-
-    # Update a global variable if you like, or just return
-    # echo "$output_file" # could echo if you want to capture in calling function
+    # Track created files in an array
+    created_files+=("$(basename "$output_file")")
+    
+    print_info "Created chunk $chunk_number: $(basename "$output_file") (tokens: $total_chunk_tokens, files: $chunk_file_count)"
 }
 
 # ---------------------------------------
@@ -738,3 +720,8 @@ esac
 
 print_success "Processing complete!"
 print_info "Files saved in: $OUTPUT_DIR"
+
+print_success "Created ${#created_files[@]} files:"
+for file in "${created_files[@]}"; do
+    echo "  📄 $file"
+done
