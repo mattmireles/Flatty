@@ -438,7 +438,7 @@ write_chunk() {
 write_large_directory() {
     local file_counter="$1"
     local dir="$2"
-    local file_list="$3"
+    local dir_index="$3"  # Changed from file_list to dir_index
     
     print_status "Directory '$dir' exceeds token limit, splitting at file level..."
     
@@ -447,7 +447,7 @@ write_large_directory() {
     local part_file
     part_file=$(create_output_file "$file_counter" "chunk") || exit 1
     
-    [ "$VERBOSE" = true ] && print_info "Creating sub-chunk for large directory: $dir"
+    [ "$VERBOSE" = true ] && print_info "Creating chunk for large directory: $dir"
     
     echo "# Project: $(basename "$PWD")" > "$part_file"
     echo "# Generated: $(date)" >> "$part_file"
@@ -462,14 +462,13 @@ write_large_directory() {
         local f_tokens
         f_tokens=$(estimate_tokens "$(cat "$f")")
         
-        # Validate token count for each file
         if ! [[ "$f_tokens" =~ ^[0-9]+$ ]]; then
             print_error "Invalid token count for file $f: $f_tokens"
             continue
         fi
         
         if [ $((sub_tokens + f_tokens)) -gt "$TOKEN_LIMIT" ] && [ "$sub_tokens" -gt 0 ]; then
-            print_info "Sub-chunk for $dir complete. (tokens: $sub_tokens, files: $chunk_subfile_count)"
+            print_info "Chunk for $dir complete. (tokens: $sub_tokens, files: $chunk_subfile_count)"
             ((file_counter++))
             sub_tokens=0
             chunk_subfile_count=0
@@ -491,10 +490,10 @@ write_large_directory() {
         ((chunk_subfile_count++))
         [ "$VERBOSE" = true ] && print_info "  Added: $f ($f_tokens tokens)"
         
-    done <<< "$file_list"
+    done <<< "${SCAN_DIR_FILE_LISTS[$dir_index]}"  # Use file list from global array
 
     created_files+=("$part_file")
-    print_info "Created sub-chunk: $(basename "$part_file") (directory: $dir, files: $chunk_subfile_count, tokens: $sub_tokens)"
+    print_info "Created chunk: $(basename "$part_file") (directory: $dir, files: $chunk_subfile_count, tokens: $sub_tokens)"
 }
 
 
