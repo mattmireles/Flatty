@@ -604,9 +604,9 @@ write_large_directory() {
                 echo "---"
             } > "$current_chunk_file"
 
-            ((chunk_number++))
             current_chunk_tokens=0
             files_in_chunk=0
+            ((chunk_number++))
         fi
 
         # 6. Add file to chunk with error checking
@@ -621,7 +621,7 @@ write_large_directory() {
 
         [ "$VERBOSE" = true ] && print_info "Added to chunk: $file ($file_tokens tokens)"
 
-    done <<< "${SCAN_DIR_FILE_LISTS[$dir_index]}" # IMPORTANT: Use the file list for THIS directory
+    done <<< "${SCAN_DIR_FILE_LISTS[$dir_index]}"
 
     # 7. Handle final chunk
     if [ ! -z "$current_chunk_file" ] && [ $files_in_chunk -gt 0 ]; then
