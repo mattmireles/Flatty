@@ -401,6 +401,12 @@ process_by_directory() {
     # Fill up our global arrays
     scan_repository
     
+    # Add this debug check
+    if [ ${#SCAN_DIR_NAMES[@]} -eq 0 ]; then
+        print_error "No directories found after scan_repository"
+        return 1
+    fi
+    
     local total_tokens=0
     for ((i=0; i<${#SCAN_DIR_TOKEN_COUNTS[@]}; i++)); do
         total_tokens=$(( total_tokens + SCAN_DIR_TOKEN_COUNTS[i] ))
@@ -434,7 +440,7 @@ process_by_directory() {
                 current_chunk_dirs=()
                 current_chunk_tokens=0
             fi
-            # Pass the correct directory index (i) to write_large_directory
+            # Pass the correct chunk number and directory index
             write_large_directory "$chunk_number" "$dir" "$i"
             ((chunk_number++))
             continue
