@@ -440,8 +440,9 @@ process_by_directory() {
                 current_chunk_dirs=()
                 current_chunk_tokens=0
             fi
+            local large_dir_index=$i # Store the original directory index
             ((chunk_number++))
-            write_large_directory "$chunk_number" "$dir" "$i"
+            write_large_directory "$chunk_number" "$dir" "$large_dir_index" # Use the stored index
             continue
         fi
         
