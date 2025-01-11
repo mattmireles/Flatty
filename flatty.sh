@@ -71,6 +71,8 @@ declare -a created_files=()  # track output files
 DEFAULT_EXCLUDES=("*.git/*" "*.DS_Store" "*node_modules/*" "*.swiftpm/*")
 RUN_TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
 
+ALLOWED_EXTENSIONS=("swift" "m" "mm" "js" "ts" "jsx" "tsx" "java" "rb" "py" "php" "go" "sh" "c" "h" "cpp" "hpp" "html" "css" "json" "yaml" "yml" "md" "txt")
+
 
 # ==========================================================
 # 3. Logging & Output Helpers
@@ -182,7 +184,7 @@ validate_token_counts() {
         print_error "  Expected: $dir"
         print_error "  Found: ${SCAN_DIR_NAMES[$dir_index]}"
         return 1
-    }
+    fi
 
     # 4. Token counting with improved error handling
     local actual_tokens=0
@@ -294,13 +296,14 @@ write_file_content() {
 scan_repository() {
     print_status "Scanning repository structure..."
     
-    # Initialize arrays explicitly to ensure clean state
+    # Initialize global arrays if needed
     SCAN_DIR_NAMES=()
     SCAN_DIR_TOKEN_COUNTS=()
     SCAN_DIR_FILE_LISTS=()
     
     while IFS= read -r -d $'\n' file; do
-        if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
+        # Check extension + any user patterns
+        if is_allowed_extension "$file" && matches_patterns "$file"; then
             local dir
             dir="$(dirname "$file")"
             local tokens
@@ -315,16 +318,13 @@ scan_repository() {
                 fi
             done
 
-            if [ $found_index -ge 0 ]; then
-                # Update existing directory with explicit arithmetic
+            if [ "$found_index" -ge 0 ]; then
                 SCAN_DIR_TOKEN_COUNTS[$found_index]=$((SCAN_DIR_TOKEN_COUNTS[found_index] + tokens))
                 SCAN_DIR_FILE_LISTS[$found_index]+="${file}"$'\n'
             else
-                # Add new directory with proper array syntax
                 SCAN_DIR_NAMES+=("$dir")
                 SCAN_DIR_TOKEN_COUNTS+=(${tokens})
                 SCAN_DIR_FILE_LISTS+=("${file}"$'\n')
-                found_index=$((${#SCAN_DIR_NAMES[@]} - 1))
             fi
 
             [ "$VERBOSE" = true ] && echo "  Scanning: $file (${tokens} tokens)"
@@ -637,7 +637,7 @@ process_by_type() {
     local current_type=""
     
     while IFS= read -r -d $'\n' file; do
-        if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
+        if is_allowed_extension "$file" && matches_patterns "$file"; then
             local type
             type=$(get_file_type_group "$file")
 
@@ -675,7 +675,7 @@ calculate_total_tokens() {
     print_status "Analyzing repository size..."
     
     while IFS= read -r -d $'\n' file; do
-        if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
+        if is_allowed_extension "$file" && matches_patterns "$file"; then
             ((file_count++))
             total_tokens=$(( total_tokens + $(estimate_tokens "$(cat "$file")") ))
             if [ "$VERBOSE" = true ]; then
@@ -704,7 +704,7 @@ process_by_size() {
         
         local processed_files=0
         while IFS= read -r -d $'\n' file; do
-            if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
+            if is_allowed_extension "$file" && matches_patterns "$file"; then
                 ((processed_files++))
                 write_file_content "$file" "$current_file"
                 [ "$VERBOSE" = true ] && echo "Processing ($processed_files): $file"
@@ -722,7 +722,7 @@ process_by_size() {
     local file_counter=1
     
     while IFS= read -r -d $'\n' file; do
-        if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
+        if is_allowed_extension "$file" && matches_patterns "$file"; then
             local f_tokens
             f_tokens=$(estimate_tokens "$(cat "$file")")
             
@@ -977,3 +977,20 @@ for file in "${created_files[@]}"; do
 done
 
 print_summary
+
+is_allowed_extension() {
+    local filename="$1"
+    # Extract extension
+    local ext="${filename##*.}"
+    # Lowercase the extension to handle uppercase or mixed-case
+    ext="$(echo "$ext" | tr '[:upper:]' '[:lower:]')"
+    
+    # Check if $ext is in ALLOWED_EXTENSIONS
+    for allowed_ext in "${ALLOWED_EXTENSIONS[@]}"; do
+        if [ "$ext" = "$allowed_ext" ]; then
+            return 0  # success
+        fi
+    done
+    
+    return 1  # not found
+}
