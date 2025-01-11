@@ -440,9 +440,8 @@ process_by_directory() {
                 current_chunk_dirs=()
                 current_chunk_tokens=0
             fi
-            # Pass the correct chunk number and directory index
-            write_large_directory "$chunk_number" "$dir" "$i"
             ((chunk_number++))
+            write_large_directory "$chunk_number" "$dir" "$i"
             continue
         fi
         
