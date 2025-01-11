@@ -63,13 +63,9 @@ INCLUDE_PATTERNS=()
 EXCLUDE_PATTERNS=()
 SEPARATOR="--------------------------------------------------------------------------------"
 
-# Global arrays (Removed local -n)
-# We'll store directory data here, visible to all functions
-declare -a SCAN_DIR_NAMES=()
-declare -a SCAN_DIR_TOKEN_COUNTS=()
-declare -a SCAN_DIR_FILE_LISTS=()
+# Simplify global state - we only need to track output files
+declare -a created_files=()
 
-declare -a created_files=()  # track output files
 DEFAULT_EXCLUDES=("*.git/*" "*.DS_Store" "*node_modules/*" "*.swiftpm/*")
 RUN_TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
 
@@ -972,21 +968,8 @@ print_status "Starting Flatty..."
 print_info "Output directory: $OUTPUT_DIR"
 [ "$VERBOSE" = true ] && print_info "Verbose mode enabled"
 
-case $GROUP_BY in
-    "directory")
-        process_by_directory
-        ;;
-    "type")
-        process_by_type
-        ;;
-    "size")
-        process_by_size
-        ;;
-    *)
-        print_error "Error: Invalid grouping mode: $GROUP_BY"
-        exit 1
-        ;;
-esac
+# Simplify to just use size-based processing
+process_by_size
 
 print_success "Processing complete!"
 print_info "Files saved in: $OUTPUT_DIR"
