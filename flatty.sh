@@ -116,7 +116,8 @@ update_dir_info() {
 # Directory Scanning
 # ==========================================================
 scan_directory() {
-    print_status "Analyzing repository structure..."
+    # Print status to stderr so it won't be captured by command substitution
+    print_status "Analyzing repository structure..." >&2
     
     local total_tokens=0
     
@@ -139,7 +140,7 @@ scan_directory() {
         
     done < <(find . -type f -print0)
     
-    echo "$total_tokens"  # Return total token count
+    echo "$total_tokens"  # This goes to stdout
 }
 
 # ==========================================================
