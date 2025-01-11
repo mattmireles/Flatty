@@ -441,8 +441,9 @@ process_by_directory() {
                 current_chunk_tokens=0
             fi
             local large_dir_index=$i # Store the original directory index
+            local file_list="${SCAN_DIR_FILE_LISTS[$large_dir_index]}" # Get the file list
             ((chunk_number++))
-            write_large_directory "$chunk_number" "$dir" "$large_dir_index" # Use the stored index
+            write_large_directory "$chunk_number" "$dir" "$file_list" # Pass the file list
             continue
         fi
         
@@ -539,38 +540,14 @@ write_chunk() {
 write_large_directory() {
     local chunk_number="$1"
     local dir="$2"
-    local dir_index="$3"
+    local file_list="$3" # Receive the file list
 
-    # 1. Validate input parameters
-    if [ -z "$chunk_number" ] || [ -z "$dir" ] || [ -z "$dir_index" ]; then
-        print_error "write_large_directory: Missing required parameters"
-        return 1
-    fi
+    [ "$VERBOSE" = true ] && print_info "Processing large directory: $dir"
 
-    # 2. Safe array bounds check
-    if [ "$dir_index" -lt 0 ] || [ "$dir_index" -ge "${#SCAN_DIR_NAMES[@]}" ]; then
-        print_error "write_large_directory: Invalid directory index: $dir_index (max: $((${#SCAN_DIR_NAMES[@]} - 1)))"
-        return 1
-    fi
-
-    local dir_tokens="${SCAN_DIR_TOKEN_COUNTS[$dir_index]}"
-
-    # 3. Verify we have the correct directory
-    if [ "${SCAN_DIR_NAMES[$dir_index]}" != "$dir" ]; then
-        print_error "write_large_directory: Directory mismatch"
-        print_error "  Expected: $dir"
-        print_error "  Found: ${SCAN_DIR_NAMES[$dir_index]}"
-        return 1
-    fi
-
-    [ "$VERBOSE" = true ] && print_info "Processing large directory: $dir ($dir_tokens tokens)"
-
-    # 4. Process files with proper error handling
     local current_chunk_file=""
     local current_chunk_tokens=0
     local files_in_chunk=0
 
-    # Iterate through the FILE LIST for this specific directory
     while IFS= read -r file; do
         [ -z "$file" ] && continue
 
@@ -582,7 +559,6 @@ write_large_directory() {
         local file_tokens
         file_tokens=$(estimate_tokens "$(cat "$file")")
 
-        # 5. Start new chunk if needed
         if [ -z "$current_chunk_file" ] || [ $((current_chunk_tokens + file_tokens)) -gt "$TOKEN_LIMIT" ]; then
             if [ ! -z "$current_chunk_file" ]; then
                 print_info "Created chunk: $(basename "$current_chunk_file") (tokens: $current_chunk_tokens, files: $files_in_chunk)"
@@ -594,22 +570,19 @@ write_large_directory() {
                 return 1
             fi
 
-            # Write chunk headers
             {
                 echo "# Project: $(basename "$PWD")"
                 echo "# Generated: $(date)"
                 echo "# Directory: $dir"
                 echo "# Chunk: $chunk_number"
-                echo "# Total Directory Tokens: $dir_tokens"
                 echo "---"
             } > "$current_chunk_file"
 
+            ((chunk_number++))
             current_chunk_tokens=0
             files_in_chunk=0
-            ((chunk_number++))
         fi
 
-        # 6. Add file to chunk with error checking
         write_file_content "$file" "$current_chunk_file"
         if [ $? -ne 0 ]; then
             print_error "Failed to write file content: $file"
@@ -621,9 +594,8 @@ write_large_directory() {
 
         [ "$VERBOSE" = true ] && print_info "Added to chunk: $file ($file_tokens tokens)"
 
-    done <<< "${SCAN_DIR_FILE_LISTS[$dir_index]}"
+    done <<< "$file_list" # Iterate through the passed file list
 
-    # 7. Handle final chunk
     if [ ! -z "$current_chunk_file" ] && [ $files_in_chunk -gt 0 ]; then
         print_info "Created final chunk: $(basename "$current_chunk_file") (tokens: $current_chunk_tokens, files: $files_in_chunk)"
     fi
