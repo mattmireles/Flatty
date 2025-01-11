@@ -71,7 +71,11 @@ declare -a created_files=()  # track output files
 DEFAULT_EXCLUDES=("*.git/*" "*.DS_Store" "*node_modules/*" "*.swiftpm/*")
 RUN_TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
 
-ALLOWED_EXTENSIONS=("swift" "m" "mm" "js" "ts" "jsx" "tsx" "java" "rb" "py" "php" "go" "sh" "c" "h" "cpp" "hpp" "html" "css" "json" "yaml" "yml" "md" "txt")
+declare -a ALLOWED_EXTENSIONS=(
+    "swift" "m" "mm" "js" "ts" "jsx" "tsx" "java" "rb" "py" 
+    "php" "go" "sh" "c" "h" "cpp" "hpp" "html" "css" "json" 
+    "yaml" "yml" "md" "txt"
+)
 
 
 # ==========================================================
@@ -93,6 +97,23 @@ print_error() {
     echo "❌ $1" >&2
 }
 
+# Add is_allowed_extension here, before section 4
+is_allowed_extension() {
+    local filename="$1"
+    # Extract extension
+    local ext="${filename##*.}"
+    # Lowercase the extension to handle uppercase or mixed-case
+    ext="$(echo "$ext" | tr '[:upper:]' '[:lower:]')"
+    
+    # Check if $ext is in ALLOWED_EXTENSIONS
+    for allowed_ext in "${ALLOWED_EXTENSIONS[@]}"; do
+        if [ "$ext" = "$allowed_ext" ]; then
+            return 0  # success
+        fi
+    done
+    
+    return 1  # not found
+}
 
 # ==========================================================
 # 4. Environment & Validation
@@ -176,7 +197,7 @@ validate_token_counts() {
     if [ "$dir_index" -lt 0 ] || [ "$dir_index" -ge "${#SCAN_DIR_NAMES[@]}" ]; then
         print_error "validate_token_counts: Invalid directory index: $dir_index (max: $((${#SCAN_DIR_NAMES[@]} - 1)))"
         return 1
-    }
+    fi
 
     # 3. Directory name verification
     if [ "${SCAN_DIR_NAMES[$dir_index]}" != "$dir" ]; then
@@ -193,7 +214,8 @@ validate_token_counts() {
         if [ ! -f "$f" ]; then
             [ "$VERBOSE" = true ] && print_error "validate_token_counts: File not found: $f"
             continue
-        }
+        fi
+
         local f_tokens
         f_tokens=$(estimate_tokens "$(cat "$f")")
         actual_tokens=$((actual_tokens + f_tokens))
@@ -210,7 +232,7 @@ validate_token_counts() {
         print_error "  Actual:   $actual_tokens"
         print_error "  Diff:     $diff tokens ($((diff * 100 / expected_tokens))%)"
         return 1
-    }
+    fi
 
     # 6. Improved verbose logging
     [ "$VERBOSE" = true ] && print_info "Validated token count for $dir: $actual_tokens tokens"
@@ -323,7 +345,7 @@ scan_repository() {
                 SCAN_DIR_FILE_LISTS[$found_index]+="${file}"$'\n'
             else
                 SCAN_DIR_NAMES+=("$dir")
-                SCAN_DIR_TOKEN_COUNTS+=(${tokens})
+                SCAN_DIR_TOKEN_COUNTS+=("${tokens}")
                 SCAN_DIR_FILE_LISTS+=("${file}"$'\n')
             fi
 
@@ -518,13 +540,13 @@ write_large_directory() {
     if [ -z "$chunk_number" ] || [ -z "$dir" ] || [ -z "$dir_index" ]; then
         print_error "write_large_directory: Missing required parameters"
         return 1
-    }
+    fi
     
     # 2. Safe array bounds check
     if [ "$dir_index" -lt 0 ] || [ "$dir_index" -ge "${#SCAN_DIR_NAMES[@]}" ]; then
         print_error "write_large_directory: Invalid directory index: $dir_index (max: $((${#SCAN_DIR_NAMES[@]} - 1)))"
         return 1
-    }
+    fi
 
     local dir_tokens="${SCAN_DIR_TOKEN_COUNTS[$dir_index]}"
     
@@ -534,7 +556,7 @@ write_large_directory() {
         print_error "  Expected: $dir"
         print_error "  Found: ${SCAN_DIR_NAMES[$dir_index]}"
         return 1
-    }
+    fi
 
     [ "$VERBOSE" = true ] && print_info "Processing large directory: $dir ($dir_tokens tokens)"
 
@@ -549,7 +571,7 @@ write_large_directory() {
         if [ ! -f "$file" ]; then
             [ "$VERBOSE" = true ] && print_error "File not found: $file"
             continue
-        }
+        fi
 
         local file_tokens
         file_tokens=$(estimate_tokens "$(cat "$file")")
@@ -558,13 +580,13 @@ write_large_directory() {
         if [ -z "$current_chunk_file" ] || [ $((current_chunk_tokens + file_tokens)) -gt "$TOKEN_LIMIT" ]; then
             if [ ! -z "$current_chunk_file" ]; then
                 print_info "Created chunk: $(basename "$current_chunk_file") (tokens: $current_chunk_tokens, files: $files_in_chunk)"
-            }
+            fi
             
             current_chunk_file=$(create_output_file "${chunk_number}" "chunk")
             if [ $? -ne 0 ]; then
                 print_error "Failed to create new chunk file"
                 return 1
-            }
+            fi
             
             # Write chunk headers
             {
@@ -579,14 +601,14 @@ write_large_directory() {
             ((chunk_number++))
             current_chunk_tokens=0
             files_in_chunk=0
-        }
+        fi
         
         # 6. Add file to chunk with error checking
         write_file_content "$file" "$current_chunk_file"
         if [ $? -ne 0 ]; then
             print_error "Failed to write file content: $file"
             continue
-        }
+        fi
         
         current_chunk_tokens=$((current_chunk_tokens + file_tokens))
         ((files_in_chunk++))
@@ -598,7 +620,7 @@ write_large_directory() {
     # 7. Handle final chunk
     if [ ! -z "$current_chunk_file" ] && [ $files_in_chunk -gt 0 ]; then
         print_info "Created final chunk: $(basename "$current_chunk_file") (tokens: $current_chunk_tokens, files: $files_in_chunk)"
-    }
+    fi
     
     return 0
 }
@@ -977,20 +999,3 @@ for file in "${created_files[@]}"; do
 done
 
 print_summary
-
-is_allowed_extension() {
-    local filename="$1"
-    # Extract extension
-    local ext="${filename##*.}"
-    # Lowercase the extension to handle uppercase or mixed-case
-    ext="$(echo "$ext" | tr '[:upper:]' '[:lower:]')"
-    
-    # Check if $ext is in ALLOWED_EXTENSIONS
-    for allowed_ext in "${ALLOWED_EXTENSIONS[@]}"; do
-        if [ "$ext" = "$allowed_ext" ]; then
-            return 0  # success
-        fi
-    done
-    
-    return 1  # not found
-}
