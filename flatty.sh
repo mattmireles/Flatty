@@ -55,11 +55,13 @@ trap 'exit 1' INT TERM
 # ==========================================================
 # 2. Configuration & Globals
 # ==========================================================
-OUTPUT_DIR="$HOME/flattened"
-SEPARATOR="---"
+GROUP_BY="size"  # Default to size-based grouping as it's more reliable
 TOKEN_LIMIT=100000
-GROUP_BY="directory"    # Can be: directory, type, or size
+OUTPUT_DIR="./flatty_output"
 VERBOSE=false
+INCLUDE_PATTERNS=()
+EXCLUDE_PATTERNS=()
+SEPARATOR="--------------------------------------------------------------------------------"
 
 # Global arrays (Removed local -n)
 # We'll store directory data here, visible to all functions
@@ -689,70 +691,65 @@ calculate_total_tokens() {
 }
 
 process_by_size() {
-    local total_tokens
-    total_tokens=$(calculate_total_tokens)
+    print_status "Processing files by size..."
     
-    if [ "$total_tokens" -le "$TOKEN_LIMIT" ]; then
-        print_status "Repository fits within token limit. Creating single consolidated file..."
-        local current_file
-        current_file=$(create_output_file "main" "main") || exit 1
-        
-        echo "# Project: $(basename "$PWD")" > "$current_file"
-        echo "# Generated: $(date)" >> "$current_file"
-        echo "# Total Tokens: ~$total_tokens" >> "$current_file"
-        echo "---" >> "$current_file"
-        
-        local processed_files=0
-        while IFS= read -r -d $'\n' file; do
-            if is_allowed_extension "$file" && matches_patterns "$file"; then
-                ((processed_files++))
-                write_file_content "$file" "$current_file"
-                [ "$VERBOSE" = true ] && echo "Processing ($processed_files): $file"
-            fi
-        done < <(find . -type f | sort)
-        
-        print_success "Created: $(basename "$current_file")"
-        print_info "Location: $current_file"
-        return
-    fi
-    
-    print_status "Repository exceeds token limit. Splitting into multiple files..."
+    # Track our progress
     local current_file=""
     local current_tokens=0
-    local file_counter=1
+    local chunk_number=1
+    local files_in_chunk=0
     
+    # First, get a sorted list of files by size (largest first)
     while IFS= read -r -d $'\n' file; do
-        if is_allowed_extension "$file" && matches_patterns "$file"; then
-            local f_tokens
-            f_tokens=$(estimate_tokens "$(cat "$file")")
-            
-            if [ $((current_tokens + f_tokens)) -gt "$TOKEN_LIMIT" ] && [ "$current_tokens" -gt 0 ]; then
-                print_info "Created: $(basename "$current_file") (tokens: $current_tokens)"
-                file_counter=$((file_counter + 1))
-                current_file=$(create_output_file "$file_counter" "chunk") || exit 1
-                current_tokens=0
-                
-                echo "# Project: $(basename "$PWD")" > "$current_file"
-                echo "# Part: $file_counter" >> "$current_file"
-                echo "# Generated: $(date)" >> "$current_file"
-                echo "---" >> "$current_file"
-            fi
-            
-            if [ -z "$current_file" ]; then
-                current_file=$(create_output_file "$file_counter" "chunk") || exit 1
-                echo "# Project: $(basename "$PWD")" > "$current_file"
-                echo "# Part: $file_counter" >> "$current_file"
-                echo "# Generated: $(date)" >> "$current_file"
-                echo "---" >> "$current_file"
-            fi
-            
-            write_file_content "$file" "$current_file"
-            current_tokens=$(( current_tokens + f_tokens ))
-            [ "$VERBOSE" = true ] && echo "Processing: $file (tokens=$current_tokens)"
+        if ! is_allowed_extension "$file" || ! matches_patterns "$file"; then
+            continue
         fi
-    done < <(find . -type f | sort)
+        
+        # Get token count for this file
+        local file_tokens
+        file_tokens=$(estimate_tokens "$(cat "$file")")
+        
+        [ "$VERBOSE" = true ] && print_info "Processing: $file ($file_tokens tokens)"
+        
+        # If this single file exceeds token limit, warn but include it
+        if [ "$file_tokens" -gt "$TOKEN_LIMIT" ]; then
+            print_info "Warning: File exceeds token limit: $file ($file_tokens tokens)"
+        fi
+        
+        # Start new chunk if needed
+        if [ -z "$current_file" ] || [ $((current_tokens + file_tokens)) -gt "$TOKEN_LIMIT" ]; then
+            # Finalize previous chunk if it exists
+            if [ ! -z "$current_file" ]; then
+                print_success "Created chunk $chunk_number: $(basename "$current_file") ($current_tokens tokens, $files_in_chunk files)"
+                ((chunk_number++))
+            fi
+            
+            # Start new chunk
+            current_file=$(create_output_file "$chunk_number" "chunk") || exit 1
+            
+            # Write chunk header
+            {
+                echo "# Project: $(basename "$PWD")"
+                echo "# Generated: $(date)"
+                echo "# Chunk: $chunk_number"
+                echo "---"
+            } > "$current_file"
+            
+            current_tokens=0
+            files_in_chunk=0
+        fi
+        
+        # Add file to current chunk
+        write_file_content "$file" "$current_file"
+        current_tokens=$((current_tokens + file_tokens))
+        ((files_in_chunk++))
+        
+    done < <(find . -type f -print0 | sort -z)
     
-    [ -n "$current_file" ] && print_info "Created: $(basename "$current_file") (tokens: $current_tokens)"
+    # Handle final chunk
+    if [ ! -z "$current_file" ] && [ "$files_in_chunk" -gt 0 ]; then
+        print_success "Created final chunk $chunk_number: $(basename "$current_file") ($current_tokens tokens, $files_in_chunk files)"
+    fi
 }
 
 
@@ -874,64 +871,59 @@ print_summary() {
 # ==========================================================
 # 15. Command-Line Argument Parsing
 # ==========================================================
+TOKEN_LIMIT=100000
+OUTPUT_DIR="./flatty_output"
+VERBOSE=false
 INCLUDE_PATTERNS=()
 EXCLUDE_PATTERNS=()
+SEPARATOR="--------------------------------------------------------------------------------"
+
+print_usage() {
+    echo "Usage: $(basename "$0") [options]"
+    echo "Options:"
+    echo "  -t <tokens>     Set the token limit for output files (default: $TOKEN_LIMIT)"
+    echo "  -o <directory>  Set the output directory (default: $OUTPUT_DIR)"
+    echo "  --group-by <type> Group output by 'size' (default), 'directory', or 'type'"
+    echo "  -v              Enable verbose output"
+    echo "  -i <pattern>    Include files matching pattern (can be used multiple times)"
+    echo "  -e <pattern>    Exclude files matching pattern (can be used multiple times)"
+    echo "  -h, --help      Show this help message"
+}
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         -h|--help)
-            cat << EOF
-Flatty - Convert directories into LLM-friendly text files
-
-Usage: flatty [options] [patterns...]
-
-Options:
-    -o, --output-dir DIR     Output directory (default: ~/flattened)
-    -g, --group-by MODE      Grouping mode:
-                            directory  - Group by directory structure (default)
-                            type       - Group by file type
-                            size       - Evenly split by token count
-    -i, --include PATTERN    Include only files matching pattern
-    -x, --exclude PATTERN    Exclude files matching pattern
-    -t, --tokens LIMIT       Target token limit per file (default: 100000)
-    -v, --verbose            Show detailed progress
-    -h, --help               Show this help message
-
-Examples:
-    flatty                                    # Process current directory
-    flatty -i "*.swift" -i "*.h" -i "*.m"    # Only Swift and Obj-C files
-    flatty --group-by type                    # Group similar files together
-    flatty --group-by size -t 50000          # Even chunks of 50k tokens
-EOF
+            print_usage
             exit 0
+            ;;
+        -t|--tokens)
+            TOKEN_LIMIT="$2"
+            shift 2
             ;;
         -o|--output-dir)
             OUTPUT_DIR="$2"
             shift 2
             ;;
-        -g|--group-by)
+        --group-by)
             GROUP_BY="$2"
-            shift 2
-            ;;
-        -i|--include)
-            INCLUDE_PATTERNS+=("$2")
-            shift 2
-            ;;
-        -x|--exclude)
-            EXCLUDE_PATTERNS+=("$2")
-            shift 2
-            ;;
-        -t|--tokens)
-            TOKEN_LIMIT="$2"
             shift 2
             ;;
         -v|--verbose)
             VERBOSE=true
             shift
             ;;
+        -i|--include)
+            INCLUDE_PATTERNS+=("$2")
+            shift 2
+            ;;
+        -e|--exclude)
+            EXCLUDE_PATTERNS+=("$2")
+            shift 2
+            ;;
         *)
-            INCLUDE_PATTERNS+=("$1")
-            shift
+            echo "Error: Invalid option: $1"
+            print_usage
+            exit 1
             ;;
     esac
 done
