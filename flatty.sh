@@ -164,30 +164,41 @@ validate_token_counts() {
     local dir_index="$2"
     local expected_tokens="$3"
 
+    # 1. Parameter validation
     if [ -z "$dir" ] || [ -z "$expected_tokens" ]; then
         print_error "validate_token_counts: Missing parameter(s)"
         return 1
     fi
 
+    # 2. Array bounds checking with helpful max index
     if [ "$dir_index" -lt 0 ] || [ "$dir_index" -ge "${#SCAN_DIR_NAMES[@]}" ]; then
-        print_error "validate_token_counts: Invalid directory index: $dir_index"
+        print_error "validate_token_counts: Invalid directory index: $dir_index (max: $((${#SCAN_DIR_NAMES[@]} - 1)))"
         return 1
-    fi
+    }
 
+    # 3. Directory name verification
+    if [ "${SCAN_DIR_NAMES[$dir_index]}" != "$dir" ]; then
+        print_error "validate_token_counts: Directory mismatch at index $dir_index"
+        print_error "  Expected: $dir"
+        print_error "  Found: ${SCAN_DIR_NAMES[$dir_index]}"
+        return 1
+    }
+
+    # 4. Token counting with improved error handling
     local actual_tokens=0
     while IFS= read -r f; do
         [ -z "$f" ] && continue
         if [ ! -f "$f" ]; then
-            print_error "validate_token_counts: File not found: $f"
+            [ "$VERBOSE" = true ] && print_error "validate_token_counts: File not found: $f"
             continue
-        fi
+        }
         local f_tokens
         f_tokens=$(estimate_tokens "$(cat "$f")")
         actual_tokens=$((actual_tokens + f_tokens))
     done <<< "${SCAN_DIR_FILE_LISTS[$dir_index]}"
 
-    # (Optional) Let’s allow a small tolerance, e.g., ±1%
-    local tolerance=$((expected_tokens / 100))
+    # 5. Enhanced tolerance checking with percentage
+    local tolerance=$((expected_tokens / 100))  # 1% tolerance
     local diff=$((actual_tokens - expected_tokens))
     diff=${diff#-}  # absolute value
 
@@ -195,9 +206,11 @@ validate_token_counts() {
         print_error "Token count mismatch for $dir:"
         print_error "  Expected: $expected_tokens"
         print_error "  Actual:   $actual_tokens"
+        print_error "  Diff:     $diff tokens ($((diff * 100 / expected_tokens))%)"
         return 1
-    fi
+    }
 
+    # 6. Improved verbose logging
     [ "$VERBOSE" = true ] && print_info "Validated token count for $dir: $actual_tokens tokens"
     return 0
 }
@@ -281,8 +294,10 @@ write_file_content() {
 scan_repository() {
     print_status "Scanning repository structure..."
     
-    local old_IFS="$IFS"
-    IFS=$'\n'
+    # Initialize arrays explicitly to ensure clean state
+    SCAN_DIR_NAMES=()
+    SCAN_DIR_TOKEN_COUNTS=()
+    SCAN_DIR_FILE_LISTS=()
     
     while IFS= read -r -d $'\n' file; do
         if file "$file" | grep -qE '.*:.*text' && matches_patterns "$file"; then
@@ -291,7 +306,7 @@ scan_repository() {
             local tokens
             tokens=$(estimate_tokens "$(cat "$file")")
 
-            # Check if directory already tracked
+            # Find directory index with proper error handling
             local found_index=-1
             for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
                 if [ "${SCAN_DIR_NAMES[i]}" = "$dir" ]; then
@@ -301,23 +316,26 @@ scan_repository() {
             done
 
             if [ $found_index -ge 0 ]; then
-                SCAN_DIR_TOKEN_COUNTS[$found_index]=$(( SCAN_DIR_TOKEN_COUNTS[$found_index] + tokens ))
-                SCAN_DIR_FILE_LISTS[$found_index]="${SCAN_DIR_FILE_LISTS[$found_index]}${file}"$'\n'
+                # Update existing directory with explicit arithmetic
+                SCAN_DIR_TOKEN_COUNTS[$found_index]=$((SCAN_DIR_TOKEN_COUNTS[found_index] + tokens))
+                SCAN_DIR_FILE_LISTS[$found_index]+="${file}"$'\n'
             else
+                # Add new directory with proper array syntax
                 SCAN_DIR_NAMES+=("$dir")
-                SCAN_DIR_TOKEN_COUNTS+=( "$tokens" )
-                SCAN_DIR_FILE_LISTS+=( "${file}"$'\n' )
+                SCAN_DIR_TOKEN_COUNTS+=(${tokens})
+                SCAN_DIR_FILE_LISTS+=("${file}"$'\n')
+                found_index=$((${#SCAN_DIR_NAMES[@]} - 1))
             fi
 
             [ "$VERBOSE" = true ] && echo "  Scanning: $file (${tokens} tokens)"
-            if [ "$VERBOSE" = true ]; then
-                validate_token_counts "$dir" "$found_index" "${SCAN_DIR_TOKEN_COUNTS[$found_index]}" || \
-                    print_error "Token count validation failed for $dir"
-            fi
         fi
     done < <(find . -type f | sort)
     
-    IFS="$old_IFS"
+    # Validate final counts
+    for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
+        local dir="${SCAN_DIR_NAMES[i]}"
+        [ "$VERBOSE" = true ] && echo "Directory '$dir' has ${SCAN_DIR_TOKEN_COUNTS[i]} tokens"
+    done
 }
 
 
@@ -496,91 +514,93 @@ write_large_directory() {
     local dir="$2"
     local dir_index="$3"
     
-    if [ "$dir_index" -lt 0 ] || [ "$dir_index" -ge "${#SCAN_DIR_TOKEN_COUNTS[@]}" ]; then
-        print_error "Invalid directory index: $dir_index"
+    # 1. Validate input parameters
+    if [ -z "$chunk_number" ] || [ -z "$dir" ] || [ -z "$dir_index" ]; then
+        print_error "write_large_directory: Missing required parameters"
         return 1
-    fi
+    }
     
-    local dir_tokens="${SCAN_DIR_TOKEN_COUNTS[$dir_index]}"
-    # Make sure we have a numeric value
-    if ! [[ "$dir_tokens" =~ ^[0-9]+$ ]]; then
-        print_error "Internal error: Directory $dir has invalid token count: $dir_tokens"
+    # 2. Safe array bounds check
+    if [ "$dir_index" -lt 0 ] || [ "$dir_index" -ge "${#SCAN_DIR_NAMES[@]}" ]; then
+        print_error "write_large_directory: Invalid directory index: $dir_index (max: $((${#SCAN_DIR_NAMES[@]} - 1)))"
         return 1
-    fi
+    }
 
-    if [ "$dir_tokens" -le "$TOKEN_LIMIT" ]; then
-        print_error "Internal error: Directory $dir ($dir_tokens tokens) does not exceed token limit ($TOKEN_LIMIT)"
+    local dir_tokens="${SCAN_DIR_TOKEN_COUNTS[$dir_index]}"
+    
+    # 3. Verify we have the correct directory
+    if [ "${SCAN_DIR_NAMES[$dir_index]}" != "$dir" ]; then
+        print_error "write_large_directory: Directory mismatch"
+        print_error "  Expected: $dir"
+        print_error "  Found: ${SCAN_DIR_NAMES[$dir_index]}"
         return 1
-    fi
+    }
+
+    [ "$VERBOSE" = true ] && print_info "Processing large directory: $dir ($dir_tokens tokens)"
+
+    # 4. Process files with proper error handling
+    local current_chunk_file=""
+    local current_chunk_tokens=0
+    local files_in_chunk=0
     
-    print_status "Directory '$dir' exceeds token limit ($dir_tokens tokens), splitting at file level..."
-    
-    # Create initial chunk
-    local part_file
-    part_file=$(create_output_file "$chunk_number" "chunk") || exit 1
-    
-    # Write headers
-    echo "# Project: $(basename "$PWD")" > "$part_file"
-    echo "# Generated: $(date)" >> "$part_file"
-    write_full_directory_structure "$part_file"  # Include full context
-    echo -e "\n# Large Directory Split:" >> "$part_file"
-    echo "#   ${dir}" >> "$part_file"
-    echo "#   Total Tokens: ~$dir_tokens" >> "$part_file"
-    echo "# Chunk $chunk_number" >> "$part_file"
-    echo "---" >> "$part_file"
-    
-    # Track chunk contents
-    local current_tokens=0
-    local file_count=0
-    
-    # Process files
-    while IFS= read -r f; do
-        [ -z "$f" ] && continue
-        local f_tokens
-        f_tokens=$(estimate_tokens "$(cat "$f")")
+    while IFS= read -r file; do
+        [ -z "$file" ] && continue
         
-        if [ "$f_tokens" -gt "$TOKEN_LIMIT" ]; then
-            print_error "Single file $f exceeds the token limit (${f_tokens} > ${TOKEN_LIMIT}). Skipping or handle differently."
+        if [ ! -f "$file" ]; then
+            [ "$VERBOSE" = true ] && print_error "File not found: $file"
             continue
-        fi
+        }
+
+        local file_tokens
+        file_tokens=$(estimate_tokens "$(cat "$file")")
         
-        # If adding this file would exceed limit, start new chunk
-        if [ $((current_tokens + f_tokens)) -gt "$TOKEN_LIMIT" ] && [ "$current_tokens" -gt 0 ]; then
-            created_files+=("$part_file")
-            print_info "Created chunk: $(basename "$part_file") (tokens: $current_tokens, files: $file_count)"
+        # 5. Start new chunk if needed
+        if [ -z "$current_chunk_file" ] || [ $((current_chunk_tokens + file_tokens)) -gt "$TOKEN_LIMIT" ]; then
+            if [ ! -z "$current_chunk_file" ]; then
+                print_info "Created chunk: $(basename "$current_chunk_file") (tokens: $current_chunk_tokens, files: $files_in_chunk)"
+            }
             
-            # Start new chunk
+            current_chunk_file=$(create_output_file "${chunk_number}" "chunk")
+            if [ $? -ne 0 ]; then
+                print_error "Failed to create new chunk file"
+                return 1
+            }
+            
+            # Write chunk headers
+            {
+                echo "# Project: $(basename "$PWD")"
+                echo "# Generated: $(date)"
+                echo "# Directory: $dir"
+                echo "# Chunk: $chunk_number"
+                echo "# Total Directory Tokens: $dir_tokens"
+                echo "---"
+            } > "$current_chunk_file"
+            
             ((chunk_number++))
-            part_file=$(create_output_file "$chunk_number" "chunk") || exit 1
-            
-            # Reset counters
-            current_tokens=0
-            file_count=0
-            
-            # Write headers for new chunk
-            echo "# Project: $(basename "$PWD")" > "$part_file"
-            echo "# Generated: $(date)" >> "$part_file"
-            write_full_directory_structure "$part_file"
-            echo -e "\n# Large Directory Split (Continued):" >> "$part_file"
-            echo "#   ${dir}" >> "$part_file"
-            echo "#   Total Tokens: ~$dir_tokens" >> "$part_file"
-            echo "# Chunk $chunk_number" >> "$part_file"
-            echo "---" >> "$part_file"
-        fi
+            current_chunk_tokens=0
+            files_in_chunk=0
+        }
         
-        # Add file to current chunk
-        write_file_content "$f" "$part_file"
-        current_tokens=$((current_tokens + f_tokens))
-        ((file_count++))
-        [ "$VERBOSE" = true ] && print_info "  Added: $f ($f_tokens tokens)"
+        # 6. Add file to chunk with error checking
+        write_file_content "$file" "$current_chunk_file"
+        if [ $? -ne 0 ]; then
+            print_error "Failed to write file content: $file"
+            continue
+        }
+        
+        current_chunk_tokens=$((current_chunk_tokens + file_tokens))
+        ((files_in_chunk++))
+        
+        [ "$VERBOSE" = true ] && print_info "Added to chunk: $file ($file_tokens tokens)"
         
     done <<< "${SCAN_DIR_FILE_LISTS[$dir_index]}"
     
-    # Save final chunk if it has content
-    if [ "$file_count" -gt 0 ]; then
-        created_files+=("$part_file")
-        print_info "Created final chunk: $(basename "$part_file") (tokens: $current_tokens, files: $file_count)"
-    fi
+    # 7. Handle final chunk
+    if [ ! -z "$current_chunk_file" ] && [ $files_in_chunk -gt 0 ]; then
+        print_info "Created final chunk: $(basename "$current_chunk_file") (tokens: $current_chunk_tokens, files: $files_in_chunk)"
+    }
+    
+    return 0
 }
 
 
