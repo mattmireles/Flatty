@@ -1,982 +1,240 @@
 #!/bin/bash
-
-# ==========================================================
+#
 # Flatty - Convert directories into LLM-friendly text files
-# ==========================================================
+# https://github.com/mattmireles/flatty
 #
-# This script scans a directory (and subdirectories),
-# then generates consolidated plain text files containing
-# source code and text-based files. 
-#
-# Key Features:
-#  - Grouping by directory, file type, or size
-#  - Token estimations to split large files
-#  - Detailed logging and status messages
-#  - Validation, cleanup, and robust error handling
-#
-# ==========================================================
-# 1. Global Behavior: Errors, Cleanup, & Signal Handling
-# ==========================================================
-
-set -e
-set -o pipefail
-
-handle_error() {
-    local line_no=$1
-    local error_code=$2
-    echo "❌ Error on line ${line_no}: Command exited with status ${error_code}"
-    exit 1
-}
-trap 'handle_error ${LINENO} $?' ERR
-
-declare -a cleanup_files=()
-
-cleanup() {
-    local exit_code=$?
-
-    if [ ${#cleanup_files[@]} -gt 0 ]; then
-        print_status "Cleaning up temporary files..."
-        for file in "${cleanup_files[@]}"; do
-            [ -f "$file" ] && rm -f "$file"
-        done
-    fi
-    
-    if [ $exit_code -ne 0 ]; then
-        print_error "Process failed with exit code $exit_code"
-    fi
-    
-    exit $exit_code
-}
-
-trap cleanup EXIT
-trap 'exit 1' INT TERM
-
+# Exit on errors, unset variables, and pipeline failures
+set -euo pipefail
 
 # ==========================================================
-# 2. Configuration & Globals
+# Configuration
 # ==========================================================
-GROUP_BY="size"  # Default to size-based grouping as it's more reliable
+OUTPUT_DIR="$HOME/flattened"
 TOKEN_LIMIT=100000
-OUTPUT_DIR="./flatty_output"
-VERBOSE=false
-INCLUDE_PATTERNS=()
-EXCLUDE_PATTERNS=()
-SEPARATOR="--------------------------------------------------------------------------------"
+TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
 
-# Simplify global state - we only need to track output files
-declare -a created_files=()
-
-DEFAULT_EXCLUDES=("*.git/*" "*.DS_Store" "*node_modules/*" "*.swiftpm/*")
-RUN_TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
-
-declare -a ALLOWED_EXTENSIONS=(
-    "swift" "m" "mm" "js" "ts" "jsx" "tsx" "java" "rb" "py" 
-    "php" "go" "sh" "c" "h" "cpp" "hpp" "html" "css" "json" 
-    "yaml" "yml" "md" "txt"
+# Common paths to skip
+SKIP_PATTERNS=(
+    ".git/"
+    "node_modules/"
+    "venv/"
+    ".venv/"
+    "__pycache__/"
+    "dist/"
+    "build/"
+    ".next/"
+    ".DS_Store"
 )
 
+# Text file extensions we care about
+TEXT_EXTENSIONS=(
+    # Code
+    "py" "js" "jsx" "ts" "tsx" "rb" "php" "java" "go"
+    "c" "cpp" "h" "hpp" "swift" "m" "cs" "sh" "pl"
+    # Web
+    "html" "css" "scss" "less"
+    # Config
+    "json" "yaml" "yml" "toml" "ini" "env"
+    # Docs
+    "md" "txt" "rst" "markdown"
+)
 
 # ==========================================================
-# 3. Logging & Output Helpers
+# Helper Functions
 # ==========================================================
-print_status() {
-    echo "🔄 $1"
-}
-
-print_success() {
-    echo "✅ $1"
-}
-
-print_info() {
-    echo "ℹ️  $1"
-}
-
 print_error() {
-    echo "❌ $1" >&2
+    echo "❌ Error: $1" >&2
 }
 
-# Add is_allowed_extension here, before section 4
-is_allowed_extension() {
-    local filename="$1"
-    # Extract extension
-    local ext="${filename##*.}"
-    # Lowercase the extension to handle uppercase or mixed-case
-    ext="$(echo "$ext" | tr '[:upper:]' '[:lower:]')"
-    
-    # Check if $ext is in ALLOWED_EXTENSIONS
-    for allowed_ext in "${ALLOWED_EXTENSIONS[@]}"; do
-        if [ "$ext" = "$allowed_ext" ]; then
-            return 0  # success
-        fi
-    done
-    
-    return 1  # not found
+print_status() {
+    echo "→ $1"
 }
 
-# ==========================================================
-# 4. Environment & Validation
-# ==========================================================
-validate_environment() {
-    if [ -z "$(find . -type f -print -quit)" ]; then
-        print_error "No files found in directory"
-        exit 1
-    fi
-
-    if [ ! -w "$(dirname "$OUTPUT_DIR")" ]; then
-        print_error "Cannot write to output directory location: $OUTPUT_DIR"
-        exit 1
-    fi
-
-    for cmd in find grep sed tr wc; do
-        if ! command -v "$cmd" >/dev/null 2>&1; then
-            print_error "Required command not found: $cmd"
-            exit 1
-        fi
-    done
-}
-
-
-# ==========================================================
-# 5. Token Estimation & Pattern Matching
-# ==========================================================
-estimate_tokens() {
-    local content="$1"
-    local char_count
-    char_count=$(printf "%s" "$content" | wc -c | tr -d '[:space:]')
-    echo $((char_count / 4))
-}
-
-matches_patterns() {
+should_process_file() {
     local file="$1"
-    local matched=false
     
-    for pattern in "${DEFAULT_EXCLUDES[@]}"; do
-        if [[ "$file" == $pattern ]]; then
+    # Check against skip patterns
+    for pattern in "${SKIP_PATTERNS[@]}"; do
+        if [[ "$file" == *"$pattern"* ]]; then
             return 1
         fi
     done
     
-    if [ ${#INCLUDE_PATTERNS[@]} -eq 0 ]; then
-        matched=true
-    else
-        for pattern in "${INCLUDE_PATTERNS[@]}"; do
-            if [[ "$file" == $pattern ]]; then
-                matched=true
-                break
-            fi
-        done
-    fi
-    
-    if [ "$matched" = true ]; then
-        for pattern in "${EXCLUDE_PATTERNS[@]}"; do
-            if [[ "$file" == $pattern ]]; then
-                matched=false
-                break
-            fi
-        done
-    fi
-    
-    [ "$matched" = true ]
-}
-
-# 5a. Validate Token Counts
-validate_token_counts() {
-    local dir="$1"
-    local dir_index="$2"
-    local expected_tokens="$3"
-
-    # 1. Parameter validation
-    if [ -z "$dir" ] || [ -z "$expected_tokens" ]; then
-        print_error "validate_token_counts: Missing parameter(s)"
-        return 1
-    fi
-
-    # 2. Array bounds checking with helpful max index
-    if [ "$dir_index" -lt 0 ] || [ "$dir_index" -ge "${#SCAN_DIR_NAMES[@]}" ]; then
-        print_error "validate_token_counts: Invalid directory index: $dir_index (max: $((${#SCAN_DIR_NAMES[@]} - 1)))"
-        return 1
-    fi
-
-    # 3. Directory name verification
-    if [ "${SCAN_DIR_NAMES[$dir_index]}" != "$dir" ]; then
-        print_error "validate_token_counts: Directory mismatch at index $dir_index"
-        print_error "  Expected: $dir"
-        print_error "  Found: ${SCAN_DIR_NAMES[$dir_index]}"
-        return 1
-    fi
-
-    # 4. Token counting with improved error handling
-    local actual_tokens=0
-    while IFS= read -r f; do
-        [ -z "$f" ] && continue
-        if [ ! -f "$f" ]; then
-            [ "$VERBOSE" = true ] && print_error "validate_token_counts: File not found: $f"
-            continue
+    # Check file extension
+    local ext="${file##*.}"
+    for valid_ext in "${TEXT_EXTENSIONS[@]}"; do
+        if [[ "$ext" == "$valid_ext" ]]; then
+            return 0
         fi
-
-        local f_tokens
-        f_tokens=$(estimate_tokens "$(cat "$f")")
-        actual_tokens=$((actual_tokens + f_tokens))
-    done <<< "${SCAN_DIR_FILE_LISTS[$dir_index]}"
-
-    # 5. Enhanced tolerance checking with percentage
-    local tolerance=$((expected_tokens / 100))  # 1% tolerance
-    local diff=$((actual_tokens - expected_tokens))
-    diff=${diff#-}  # absolute value
-
-    if [ "$diff" -gt "$tolerance" ]; then
-        print_error "Token count mismatch for $dir:"
-        print_error "  Expected: $expected_tokens"
-        print_error "  Actual:   $actual_tokens"
-        print_error "  Diff:     $diff tokens ($((diff * 100 / expected_tokens))%)"
-        return 1
-    fi
-
-    # 6. Improved verbose logging
-    [ "$VERBOSE" = true ] && print_info "Validated token count for $dir: $actual_tokens tokens"
-    return 0
-}
-
-
-# ==========================================================
-# 6. File Creation and Content Writing
-# ==========================================================
-create_output_file() {
-    local name="$1"
-    local type="$2"  # main, chunk, sub-chunk
-
-    local file="${OUTPUT_DIR}/$(basename "$PWD")-${RUN_TIMESTAMP}"
-    case "$type" in
-        main)
-            file+=".txt"
-            ;;
-        chunk)
-            file+="-part${name}.txt"
-            ;;
-        *)
-            print_error "Invalid file type: $type"
-            return 1
-            ;;
-    esac
-
-    if ! (set -o noclobber; > "$file" 2>/dev/null); then
-        print_error "Output file already exists or cannot be created: $file"
-        return 1
-    fi
-
-    created_files+=("$file")
-    echo "$file"
-}
-
-write_file_content() {
-    local file="$1"
-    local output_file="$2"
-
-    if [ ! -f "$file" ]; then
-        print_error "File not found: $file"
-        return 1
-    fi
-    if [ ! -r "$file" ]; then
-        print_error "Cannot read file: $file"
-        return 1
-    fi
-
-    echo "$SEPARATOR" >> "$output_file" || {
-        print_error "Failed to write separator to output file"
-        return 1
-    }
-    
-    echo "$file" >> "$output_file" || {
-        print_error "Failed to write filename to output file"
-        return 1
-    }
-    
-    echo "$SEPARATOR" >> "$output_file" || {
-        print_error "Failed to write separator to output file"
-        return 1
-    }
-    
-    cat "$file" >> "$output_file" || {
-        print_error "Failed to write file content: $file"
-        return 1
-    }
-    
-    echo "" >> "$output_file" || {
-        print_error "Failed to write newline to output file"
-        return 1
-    }
-}
-
-
-# ==========================================================
-# 7. Directory Scanning & Data Structures
-# ==========================================================
-# We'll store all directory data into the global arrays.
-
-scan_repository() {
-    print_status "Scanning repository structure..."
-    
-    # Initialize global arrays if needed
-    SCAN_DIR_NAMES=()
-    SCAN_DIR_TOKEN_COUNTS=()
-    SCAN_DIR_FILE_LISTS=()
-    
-    while IFS= read -r -d $'\n' file; do
-        # Check extension + any user patterns
-        if is_allowed_extension "$file" && matches_patterns "$file"; then
-            local dir
-            dir="$(dirname "$file")"
-            local tokens
-            tokens=$(estimate_tokens "$(cat "$file")")
-
-            # Find directory index with proper error handling
-            local found_index=-1
-            for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
-                if [ "${SCAN_DIR_NAMES[i]}" = "$dir" ]; then
-                    found_index=$i
-                    break
-                fi
-            done
-
-            if [ "$found_index" -ge 0 ]; then
-                SCAN_DIR_TOKEN_COUNTS[$found_index]=$((SCAN_DIR_TOKEN_COUNTS[found_index] + tokens))
-                SCAN_DIR_FILE_LISTS[$found_index]+="${file}"$'\n'
-            else
-                SCAN_DIR_NAMES+=("$dir")
-                SCAN_DIR_TOKEN_COUNTS+=("${tokens}")
-                SCAN_DIR_FILE_LISTS+=("${file}"$'\n')
-            fi
-
-            [ "$VERBOSE" = true ] && echo "  Scanning: $file (${tokens} tokens)"
-        fi
-    done < <(find . -type f | sort)
-    
-    # Validate final counts
-    for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
-        local dir="${SCAN_DIR_NAMES[i]}"
-        [ "$VERBOSE" = true ] && echo "Directory '$dir' has ${SCAN_DIR_TOKEN_COUNTS[i]} tokens"
-    done
-}
-
-
-# ==========================================================
-# 8. Single-File Output (Write Entire Repo to One File)
-# ==========================================================
-write_single_file() {
-    print_status "Repository fits within token limit. Creating single consolidated file..."
-    
-    local current_file
-    current_file=$(create_output_file "main" "main") || exit 1
-    echo "# Project: $(basename "$PWD")" > "$current_file"
-    echo "# Generated: $(date)" >> "$current_file"
-    
-    # For clarity, embed a directory structure overview if desired
-    # (But we rely on the global arrays for tokens)
-    write_full_directory_structure "$current_file" SCAN_DIR_TOKEN_COUNTS
-    
-    echo "---" >> "$current_file"
-
-    for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
-        local dir="${SCAN_DIR_NAMES[i]}"
-        echo -e "\n## Directory: $dir" >> "$current_file"
-        
-        # Read the newline-delimited file list
-        while IFS= read -r f; do
-            [ -z "$f" ] && continue
-            write_file_content "$f" "$current_file"
-        done <<< "${SCAN_DIR_FILE_LISTS[i]}"
     done
     
-    created_files+=("$current_file")
-    print_success "Created: $(basename "$current_file")"
+    return 1
 }
 
+# ==========================================================
+# Directory Scanning
+# ==========================================================
+declare -A dir_tokens=()  # Directory to token count mapping
+declare -A dir_files=()   # Directory to file list mapping
 
-# ==========================================================
-# 9. Directory-Based Processing
-# ==========================================================
-process_by_directory() {
-    # Fill up our global arrays
-    scan_repository
-    
-    # Add this debug check
-    if [ ${#SCAN_DIR_NAMES[@]} -eq 0 ]; then
-        print_error "No directories found after scan_repository"
-        return 1
-    fi
+scan_directory() {
+    print_status "Analyzing repository structure..."
     
     local total_tokens=0
-    for ((i=0; i<${#SCAN_DIR_TOKEN_COUNTS[@]}; i++)); do
-        total_tokens=$(( total_tokens + SCAN_DIR_TOKEN_COUNTS[i] ))
+    while IFS= read -r -d '' file; do
+        # Skip if we shouldn't process this file
+        should_process_file "$file" || continue
+        
+        # Get directory path
+        local dir_path
+        dir_path=$(dirname "$file")
+        
+        # Count tokens (rough estimate: chars/4)
+        local chars
+        chars=$(wc -c < "$file" | tr -d '[:space:]')
+        local tokens=$((chars / 4))
+        
+        # Update directory stats
+        dir_tokens["$dir_path"]=$((${dir_tokens["$dir_path"]:-0} + tokens))
+        dir_files["$dir_path"]="${dir_files["$dir_path"]:-}$file"$'\n'
+        total_tokens=$((total_tokens + tokens))
+    done < <(find . -type f -print0)
+    
+    echo "$total_tokens"  # Return total token count
+}
+
+# ==========================================================
+# User Interface
+# ==========================================================
+show_directory_structure() {
+    echo -e "\nRepository Structure:"
+    
+    # Sort directories for consistent output
+    local sorted_dirs=($(printf "%s\n" "${!dir_tokens[@]}" | sort))
+    
+    for dir in "${sorted_dirs[@]}"; do
+        local tokens=${dir_tokens["$dir"]}
+        local indent=$(($(echo "$dir" | tr -cd '/' | wc -c) * 2))
+        printf "%${indent}s%s (~%'d tokens)\n" "" "${dir##*/}/" "$tokens"
     done
     
-    print_info "Found ${#SCAN_DIR_NAMES[@]} directories totaling ~$total_tokens tokens"
-    
-    if [ "$total_tokens" -le "$TOKEN_LIMIT" ]; then
-        write_single_file
-        return
-    fi
+    echo -e "\nTotal tokens: ~$1"
+}
 
-    # Otherwise, break it into chunks
-    local current_chunk_dirs=()
-    local current_chunk_tokens=0
-    local chunk_number=1
+get_user_selection() {
+    local sorted_dirs=($(printf "%s\n" "${!dir_tokens[@]}" | sort))
+    local num_dirs=${#sorted_dirs[@]}
     
-    for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
-        local dir="${SCAN_DIR_NAMES[i]}"
-        local dtokens="${SCAN_DIR_TOKEN_COUNTS[i]}"
-        
-        print_info "Processing directory: $dir ($dtokens tokens)"
-        
-        # Only split if directory is ACTUALLY large
-        if [ "$dtokens" -gt "$TOKEN_LIMIT" ]; then
-            print_info "Large directory: $dir ($dtokens tokens)"
-            # Write any pending chunk first
-            if [ ${#current_chunk_dirs[@]} -gt 0 ]; then
-                write_chunk "$chunk_number" "${current_chunk_dirs[@]}" "$current_chunk_tokens"
-                ((chunk_number++))
-                current_chunk_dirs=()
-                current_chunk_tokens=0
+    echo -e "\nSelect directories to process:"
+    
+    for ((i=0; i<num_dirs; i++)); do
+        local dir="${sorted_dirs[$i]}"
+        local tokens=${dir_tokens["$dir"]}
+        echo "$((i+1)). $dir (~$tokens tokens)"
+    done
+    
+    echo -e "\nEnter numbers to include (e.g., \"1 2 3\"), or \"all\" for everything: "
+    read -r selection
+    
+    if [[ "$selection" == "all" ]]; then
+        echo "${sorted_dirs[*]}"
+    else
+        local result=""
+        for num in $selection; do
+            if [[ "$num" =~ ^[0-9]+$ ]] && ((num > 0 && num <= num_dirs)); then
+                result+="${sorted_dirs[$((num-1))]} "
             fi
-            local large_dir_index=$i # Store the original directory index
-            ((chunk_number++))
-            write_large_directory "$chunk_number" "$dir" "$large_dir_index" # Use the stored index
-            continue
-        fi
-        
-        # Regular directory handling
-        if [ $(( current_chunk_tokens + dtokens )) -gt "$TOKEN_LIMIT" ] && [ ${#current_chunk_dirs[@]} -gt 0 ]; then
-            write_chunk "$chunk_number" "${current_chunk_dirs[@]}" "$current_chunk_tokens"
-            ((chunk_number++))
-            current_chunk_dirs=()
-            current_chunk_tokens=0
-        fi
-        
-        current_chunk_dirs+=("$dir")
-        current_chunk_tokens=$(( current_chunk_tokens + dtokens ))
-    done
-
-    # Write final chunk if any directories remain
-    if [ ${#current_chunk_dirs[@]} -gt 0 ]; then
-        write_chunk "$chunk_number" "${current_chunk_dirs[@]}" "$current_chunk_tokens"
+        done
+        echo "$result"
     fi
 }
 
-
 # ==========================================================
-# 10. Chunk Writing & Large Directory Splits
+# Output Generation
 # ==========================================================
-write_chunk() {
-    local chunk_number="$1"
-    shift  # Remove chunk number from args
+generate_output() {
+    local dirs=("$@")
+    local output_file="${OUTPUT_DIR}/$(basename "$PWD")-${TIMESTAMP}.txt"
     
-    # Get total tokens (last argument)
-    local total_chunk_tokens="${@: -1}"
-    # Remove total tokens from args, leaving only directory list
-    set -- "${@:1:$#-1}"
+    # Create output directory if needed
+    mkdir -p "$OUTPUT_DIR"
     
-    # Now $@ contains only the directory list, safely preserving spaces
-    local output_file
-    output_file=$(create_output_file "$chunk_number" "chunk") || exit 1
+    # Write header
+    {
+        echo "# Project: $(basename "$PWD")"
+        echo "# Generated: $(date)"
+        echo "# Total Directories: ${#dirs[@]}"
+        echo ""
+        echo "# Repository Structure:"
+        
+        # Show complete structure for context
+        for dir in "${!dir_tokens[@]}"; do
+            local tokens=${dir_tokens["$dir"]}
+            echo "#   $dir/ (~$tokens tokens)"
+        done
+        
+        echo -e "\n# Included in this file:"
+        for dir in "${dirs[@]}"; do
+            echo "#   $dir/ (~${dir_tokens["$dir"]} tokens)"
+        done
+        echo "---"
+    } > "$output_file"
     
-    [ "$VERBOSE" = true ] && print_info "Creating chunk $chunk_number with $(($#)) directories"
-    
-    echo "# Project: $(basename "$PWD")" > "$output_file"
-    echo "# Generated: $(date)" >> "$output_file"
-    echo "# Chunk: $chunk_number" >> "$output_file"
-    echo -e "\n# Complete Repository Structure:" >> "$output_file"
-    write_full_directory_structure "$output_file"
-    
-    echo -e "\n# Current Chunk Contains:" >> "$output_file"
-    for dir in "$@"; do
-        echo "#   $dir" >> "$output_file"
-        [ "$VERBOSE" = true ] && print_info "  Including directory: $dir"
-    done
-    
-    # Validate token count
-    if ! [[ "$total_chunk_tokens" =~ ^[0-9]+$ ]] || [ "$total_chunk_tokens" -gt "$TOKEN_LIMIT" ]; then
-        print_error "Invalid token count for chunk: $total_chunk_tokens"
-        return 1
-    fi
-    
-    echo -e "\n# Total tokens in chunk: ~$total_chunk_tokens" >> "$output_file"
-    echo "---" >> "$output_file"
-
-    local chunk_file_count=0
-    for dir in "$@"; do
+    # Process selected directories
+    for dir in "${dirs[@]}"; do
         echo -e "\n## Directory: $dir" >> "$output_file"
         
-        # find its index in SCAN_DIR_NAMES
-        local found_index=-1
-        for ((idx=0; idx<${#SCAN_DIR_NAMES[@]}; idx++)); do
-            if [ "${SCAN_DIR_NAMES[idx]}" = "$dir" ]; then
-                found_index=$idx
-                break
-            fi
-        done
-        
-        if [ "$found_index" -ge 0 ]; then
-            if ! validate_token_counts "$dir" "$found_index" "${SCAN_DIR_TOKEN_COUNTS[$found_index]}"; then
-                print_error "Token count validation failed for chunk directory: $dir"
-                return 1
-            fi
-            [ "$VERBOSE" = true ] && print_info "  Processing files from: $dir"
-            while IFS= read -r f; do
-                [ -z "$f" ] && continue
-                ((chunk_file_count++))
-                write_file_content "$f" "$output_file"
-                [ "$VERBOSE" = true ] && print_info "    Added: $f"
-            done <<< "${SCAN_DIR_FILE_LISTS[$found_index]}"
-        fi
-    done
-    
-    created_files+=("$output_file")
-    print_info "Created chunk $chunk_number: $(basename "$output_file") (tokens: $total_chunk_tokens, files: $chunk_file_count)"
-}
-
-write_large_directory() {
-    local chunk_number="$1"
-    local dir="$2"
-    local dir_index="$3"
-
-    # 1. Validate input parameters
-    if [ -z "$chunk_number" ] || [ -z "$dir" ] || [ -z "$dir_index" ]; then
-        print_error "write_large_directory: Missing required parameters"
-        return 1
-    fi
-
-    # 2. Safe array bounds check
-    if [ "$dir_index" -lt 0 ] || [ "$dir_index" -ge "${#SCAN_DIR_NAMES[@]}" ]; then
-        print_error "write_large_directory: Invalid directory index: $dir_index (max: $((${#SCAN_DIR_NAMES[@]} - 1)))"
-        return 1
-    fi
-
-    local dir_tokens="${SCAN_DIR_TOKEN_COUNTS[$dir_index]}"
-
-    # 3. Verify we have the correct directory
-    if [ "${SCAN_DIR_NAMES[$dir_index]}" != "$dir" ]; then
-        print_error "write_large_directory: Directory mismatch"
-        print_error "  Expected: $dir"
-        print_error "  Found: ${SCAN_DIR_NAMES[$dir_index]}"
-        return 1
-    fi
-
-    [ "$VERBOSE" = true ] && print_info "Processing large directory: $dir ($dir_tokens tokens)"
-
-    # 4. Process files with proper error handling
-    local current_chunk_file=""
-    local current_chunk_tokens=0
-    local files_in_chunk=0
-
-    # Iterate through the FILE LIST for this specific directory
-    while IFS= read -r file; do
-        [ -z "$file" ] && continue
-
-        if [ ! -f "$file" ]; then
-            [ "$VERBOSE" = true ] && print_error "File not found: $file"
-            continue
-        fi
-
-        local file_tokens
-        file_tokens=$(estimate_tokens "$(cat "$file")")
-
-        # 5. Start new chunk if needed
-        if [ -z "$current_chunk_file" ] || [ $((current_chunk_tokens + file_tokens)) -gt "$TOKEN_LIMIT" ]; then
-            if [ ! -z "$current_chunk_file" ]; then
-                print_info "Created chunk: $(basename "$current_chunk_file") (tokens: $current_chunk_tokens, files: $files_in_chunk)"
-            fi
-
-            current_chunk_file=$(create_output_file "${chunk_number}" "chunk")
-            if [ $? -ne 0 ]; then
-                print_error "Failed to create new chunk file"
-                return 1
-            fi
-
-            # Write chunk headers
-            {
-                echo "# Project: $(basename "$PWD")"
-                echo "# Generated: $(date)"
-                echo "# Directory: $dir"
-                echo "# Chunk: $chunk_number"
-                echo "# Total Directory Tokens: $dir_tokens"
-                echo "---"
-            } > "$current_chunk_file"
-
-            current_chunk_tokens=0
-            files_in_chunk=0
-            ((chunk_number++))
-        fi
-
-        # 6. Add file to chunk with error checking
-        write_file_content "$file" "$current_chunk_file"
-        if [ $? -ne 0 ]; then
-            print_error "Failed to write file content: $file"
-            continue
-        fi
-
-        current_chunk_tokens=$((current_chunk_tokens + file_tokens))
-        ((files_in_chunk++))
-
-        [ "$VERBOSE" = true ] && print_info "Added to chunk: $file ($file_tokens tokens)"
-
-    done <<< "${SCAN_DIR_FILE_LISTS[$dir_index]}"
-
-    # 7. Handle final chunk
-    if [ ! -z "$current_chunk_file" ] && [ $files_in_chunk -gt 0 ]; then
-        print_info "Created final chunk: $(basename "$current_chunk_file") (tokens: $current_chunk_tokens, files: $files_in_chunk)"
-    fi
-
-    return 0
-}
-
-
-# ==========================================================
-# 11. Processing by Type (Alternative grouping)
-# ==========================================================
-get_file_type_group() {
-    local file="$1"
-    case "$file" in
-        *.py|*.pyc) echo "python";;
-        *.js|*.jsx|*.ts|*.tsx) echo "javascript";;
-        *.go) echo "golang";;
-        *.rb) echo "ruby";;
-        *.java|*.class) echo "java";;
-        *.c|*.h) echo "c";;
-        *.cpp|*.hpp|*.cc) echo "cpp";;
-        *.swift) echo "swift";;
-        *.m|*.mm) echo "objective-c";;
-        *.html|*.htm) echo "html";;
-        *.css|*.scss|*.sass) echo "css";;
-        *.md|*.markdown) echo "docs";;
-        *.json|*.yaml|*.yml|*.toml) echo "config";;
-        *) echo "other";;
-    esac
-}
-
-process_by_type() {
-    print_status "Processing by file type..."
-    
-    # We'll just create new files as we switch types or exceed token limits
-    local current_file=""
-    local current_tokens=0
-    local file_counter=1
-    local current_type=""
-    
-    while IFS= read -r -d $'\n' file; do
-        if is_allowed_extension "$file" && matches_patterns "$file"; then
-            local type
-            type=$(get_file_type_group "$file")
-
-            local f_tokens
-            f_tokens=$(estimate_tokens "$(cat "$file")")
-
-            # If we changed file type or exceeded token limit, start new file
-            if [ "$type" != "$current_type" ] || [ $((current_tokens + f_tokens)) -gt "$TOKEN_LIMIT" ]; then
-                current_type="$type"
-                file_counter=$((file_counter + 1))
-                current_file=$(create_output_file "$file_counter" "$type") || exit 1
-                current_tokens=0
-
-                echo "# Project: $(basename "$PWD")" > "$current_file"
-                echo "# Type: $type" >> "$current_file"
-                echo "# Generated: $(date)" >> "$current_file"
-                echo "---" >> "$current_file"
-            fi
-
-            write_file_content "$file" "$current_file"
-            current_tokens=$((current_tokens + f_tokens))
-            [ "$VERBOSE" = true ] && echo "Processing: $file (type=$type, tokens=$current_tokens)"
-        fi
-    done < <(find . -type f | sort)
-}
-
-
-# ==========================================================
-# 12. Processing by Size (Token Count)
-# ==========================================================
-calculate_total_tokens() {
-    local total_tokens=0
-    local file_count=0
-    
-    print_status "Analyzing repository size..."
-    
-    while IFS= read -r -d $'\n' file; do
-        if is_allowed_extension "$file" && matches_patterns "$file"; then
-            ((file_count++))
-            total_tokens=$(( total_tokens + $(estimate_tokens "$(cat "$file")") ))
-            if [ "$VERBOSE" = true ]; then
-                echo "  Scanning: $file"
-            fi
-        fi
-    done < <(find . -type f | sort)
-    
-    print_info "Found $file_count files totaling approximately $total_tokens tokens"
-    echo "$total_tokens"
-}
-
-process_by_size() {
-    print_status "Processing files by size..."
-    
-    # Track our progress
-    local current_file=""
-    local current_tokens=0
-    local chunk_number=1
-    local files_in_chunk=0
-    
-    # First, get a sorted list of files by size (largest first)
-    while IFS= read -r -d $'\n' file; do
-        if ! is_allowed_extension "$file" || ! matches_patterns "$file"; then
-            continue
-        fi
-        
-        # Get token count for this file
-        local file_tokens
-        file_tokens=$(estimate_tokens "$(cat "$file")")
-        
-        [ "$VERBOSE" = true ] && print_info "Processing: $file ($file_tokens tokens)"
-        
-        # If this single file exceeds token limit, warn but include it
-        if [ "$file_tokens" -gt "$TOKEN_LIMIT" ]; then
-            print_info "Warning: File exceeds token limit: $file ($file_tokens tokens)"
-        fi
-        
-        # Start new chunk if needed
-        if [ -z "$current_file" ] || [ $((current_tokens + file_tokens)) -gt "$TOKEN_LIMIT" ]; then
-            # Finalize previous chunk if it exists
-            if [ ! -z "$current_file" ]; then
-                print_success "Created chunk $chunk_number: $(basename "$current_file") ($current_tokens tokens, $files_in_chunk files)"
-                ((chunk_number++))
-            fi
-            
-            # Start new chunk
-            current_file=$(create_output_file "$chunk_number" "chunk") || exit 1
-            
-            # Write chunk header
-            {
-                echo "# Project: $(basename "$PWD")"
-                echo "# Generated: $(date)"
-                echo "# Chunk: $chunk_number"
-                echo "---"
-            } > "$current_file"
-            
-            current_tokens=0
-            files_in_chunk=0
-        fi
-        
-        # Add file to current chunk
-        write_file_content "$file" "$current_file"
-        current_tokens=$((current_tokens + file_tokens))
-        ((files_in_chunk++))
-        
-    done < <(find . -type f -print0 | sort -z)
-    
-    # Handle final chunk
-    if [ ! -z "$current_file" ] && [ "$files_in_chunk" -gt 0 ]; then
-        print_success "Created final chunk $chunk_number: $(basename "$current_file") ($current_tokens tokens, $files_in_chunk files)"
-    fi
-}
-
-
-# ==========================================================
-# 13. Write Full Directory Structure for Context
-# ==========================================================
-write_full_directory_structure() {
-    local output_file="$1"
-    
-    echo -e "\n# Complete Repository Structure:" >> "$output_file"
-    echo "# (showing all directories and files with token counts)" >> "$output_file"
-    
-    # 1. Find total tokens for root (.) directory
-    local root_tokens=0
-    local root_index=-1
-    for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
-        if [ "${SCAN_DIR_NAMES[i]}" = "." ]; then
-            root_tokens="${SCAN_DIR_TOKEN_COUNTS[i]}"
-            root_index=$i
-            break
-        fi
-    done
-    
-    # 2. Print root directory and its tokens
-    echo "# ./ (~${root_tokens} tokens)" >> "$output_file"
-    
-    # 3. List root directory files (if index found)
-    if [ "$root_index" -ge 0 ]; then
+        # Read file list for this directory
         while IFS= read -r file; do
             [ -z "$file" ] && continue
-            local f_tokens
-            f_tokens=$(estimate_tokens "$(cat "$file")")
-            echo "#   └── $(basename "$file") (~$f_tokens tokens)" >> "$output_file"
-        done <<< "${SCAN_DIR_FILE_LISTS[$root_index]}"
+            {
+                echo "---"
+                echo "$file"
+                echo "---"
+                cat "$file"
+                echo ""
+            } >> "$output_file"
+        done <<< "${dir_files["$dir"]}"
+    done
+    
+    print_status "Output written to: $(basename "$output_file")"
+}
+
+# ==========================================================
+# Main Execution
+# ==========================================================
+main() {
+    # Validate current directory
+    if [ ! -d "." ]; then
+        print_error "Not a directory"
+        exit 1
     fi
     
-    # 4. Gather non-root directories
-    local all_dirs=()
-    for ((i=0; i<${#SCAN_DIR_NAMES[@]}; i++)); do
-        if [ "${SCAN_DIR_NAMES[i]}" != "." ]; then
-            all_dirs+=("${SCAN_DIR_NAMES[i]}")
-        fi
-    done
+    # Scan repository
+    local total_tokens
+    total_tokens=$(scan_directory)
     
-    # 5. Sort them for a cleaner, more consistent layout
-    IFS=$'\n' sorted_dirs=($(sort <<< "${all_dirs[*]}"))
-    unset IFS
+    # Show structure
+    show_directory_structure "$total_tokens"
     
-    # 6. Print subdirectories with indentation + file lists
-    for dir in "${sorted_dirs[@]}"; do
-        # Safely split directory path and get depth
-        local dir_parts
-        IFS='/' read -ra dir_parts <<< "$dir"
-        local depth=0
-        if [ ${#dir_parts[@]} -gt 0 ]; then
-            depth=${#dir_parts[@]}
-        fi
-        
-        # Create indent based on depth
-        local indent=""
-        for ((n=0; n<depth-1; n++)); do
-            indent="$indent  "
-        done
-        
-        # Find matching index in SCAN_DIR_NAMES
-        local dir_index=-1
-        for ((j=0; j<${#SCAN_DIR_NAMES[@]}; j++)); do
-            if [ "${SCAN_DIR_NAMES[j]}" = "$dir" ]; then
-                dir_index=$j
-                break
-            fi
-        done
-        
-        # Print subdir's token count (using basename for directory name)
-        if [ "$dir_index" -ge 0 ]; then
-            echo "# ${indent}$(basename "$dir")/ (~${SCAN_DIR_TOKEN_COUNTS[dir_index]} tokens)" >> "$output_file"
-            
-            # List each file in that subdirectory
-            while IFS= read -r file; do
-                [ -z "$file" ] && continue
-                local f_tokens
-                f_tokens=$(estimate_tokens "$(cat "$file")")
-                echo "#   ${indent}└── $(basename "$file") (~$f_tokens tokens)" >> "$output_file"
-            done <<< "${SCAN_DIR_FILE_LISTS[$dir_index]}"
-        fi
-    done
+    # If we're over the token limit, let user select dirs
+    if [ "$total_tokens" -gt "$TOKEN_LIMIT" ]; then
+        echo -e "\nTotal size exceeds ${TOKEN_LIMIT} token limit."
+        selected_dirs=($(get_user_selection))
+    else
+        # Under limit, process everything
+        selected_dirs=(${!dir_tokens[@]})
+    fi
     
-    echo -e "#\n# Current Chunk Contains:" >> "$output_file"
+    # Generate output
+    if [ ${#selected_dirs[@]} -gt 0 ]; then
+        generate_output "${selected_dirs[@]}"
+        print_status "Processing complete!"
+    else
+        print_error "No directories selected"
+        exit 1
+    fi
 }
 
-
-# ==========================================================
-# 14. Summary Reporting
-# ==========================================================
-print_summary() {
-    local total_tokens=0
-    local total_files=0
-    
-    for file in "${created_files[@]}"; do
-        local tokens
-        tokens=$(grep -m 1 "tokens" "$file" | grep -o "[0-9]\+")
-        local file_count
-        file_count=$(grep -c "^---$" "$file")
-        
-        tokens=${tokens:-0}
-        file_count=${file_count:-0}
-        
-        total_tokens=$((total_tokens + tokens))
-        total_files=$((total_files + file_count))
-    done
-    
-    echo -e "\nProcessing Summary:"
-    echo "Total Tokens: ~$total_tokens"
-    echo "Total Files Processed: $total_files"
-    echo "Output Files Created: ${#created_files[@]}"
-}
-
-
-# ==========================================================
-# 15. Command-Line Argument Parsing
-# ==========================================================
-TOKEN_LIMIT=100000
-OUTPUT_DIR="./flatty_output"
-VERBOSE=false
-INCLUDE_PATTERNS=()
-EXCLUDE_PATTERNS=()
-SEPARATOR="--------------------------------------------------------------------------------"
-
-print_usage() {
-    echo "Usage: $(basename "$0") [options]"
-    echo "Options:"
-    echo "  -t <tokens>     Set the token limit for output files (default: $TOKEN_LIMIT)"
-    echo "  -o <directory>  Set the output directory (default: $OUTPUT_DIR)"
-    echo "  --group-by <type> Group output by 'size' (default), 'directory', or 'type'"
-    echo "  -v              Enable verbose output"
-    echo "  -i <pattern>    Include files matching pattern (can be used multiple times)"
-    echo "  -e <pattern>    Exclude files matching pattern (can be used multiple times)"
-    echo "  -h, --help      Show this help message"
-}
-
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        -h|--help)
-            print_usage
-            exit 0
-            ;;
-        -t|--tokens)
-            TOKEN_LIMIT="$2"
-            shift 2
-            ;;
-        -o|--output-dir)
-            OUTPUT_DIR="$2"
-            shift 2
-            ;;
-        --group-by)
-            GROUP_BY="$2"
-            shift 2
-            ;;
-        -v|--verbose)
-            VERBOSE=true
-            shift
-            ;;
-        -i|--include)
-            INCLUDE_PATTERNS+=("$2")
-            shift 2
-            ;;
-        -e|--exclude)
-            EXCLUDE_PATTERNS+=("$2")
-            shift 2
-            ;;
-        *)
-            echo "Error: Invalid option: $1"
-            print_usage
-            exit 1
-            ;;
-    esac
-done
-
-if [[ ! "$TOKEN_LIMIT" =~ ^[0-9]+$ ]] || [ "$TOKEN_LIMIT" -lt 1000 ]; then
-    print_error "Token limit must be a positive integer >= 1000"
-    exit 1
-fi
-
-validate_environment || exit 1
-mkdir -p "$OUTPUT_DIR"
-
-
-# ==========================================================
-# 16. Main Execution Flow
-# ==========================================================
-print_status "Starting Flatty..."
-print_info "Output directory: $OUTPUT_DIR"
-[ "$VERBOSE" = true ] && print_info "Verbose mode enabled"
-
-# Simplify to just use size-based processing
-process_by_size
-
-print_success "Processing complete!"
-print_info "Files saved in: $OUTPUT_DIR"
-
-print_success "Created ${#created_files[@]} files:"
-for file in "${created_files[@]}"; do
-    echo "  📄 $(basename "$file")"
-done
-
-print_summary
+# Run main and handle errors
+main "$@"
