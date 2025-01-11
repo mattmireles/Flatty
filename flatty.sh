@@ -3,8 +3,8 @@
 # Flatty - Convert directories into LLM-friendly text files
 # https://github.com/mattmireles/flatty
 #
-# Exit on errors, unset variables, and pipeline failures
-set -euo pipefail
+# Exit on errors and pipeline failures
+set -eo pipefail
 
 # ==========================================================
 # Configuration
@@ -40,6 +40,13 @@ TEXT_EXTENSIONS=(
 )
 
 # ==========================================================
+# Parallel Arrays for Directory Data (bash 3.2 compatible)
+# ==========================================================
+DIRS=()           # Directory paths
+DIR_TOKENS=()     # Token counts
+DIR_FILES=()      # File lists (newline-separated)
+
+# ==========================================================
 # Helper Functions
 # ==========================================================
 print_error() {
@@ -71,16 +78,48 @@ should_process_file() {
     return 1
 }
 
+# Find index of directory in our arrays
+get_dir_index() {
+    local search_dir="$1"
+    local i
+    for ((i=0; i<${#DIRS[@]}; i++)); do
+        if [[ "${DIRS[$i]}" == "$search_dir" ]]; then
+            echo "$i"
+            return 0
+        fi
+    done
+    echo "-1"
+}
+
+# Add or update directory information
+update_dir_info() {
+    local dir="$1"
+    local tokens="$2"
+    local file="$3"
+    
+    local idx
+    idx=$(get_dir_index "$dir")
+    
+    if [[ $idx -eq -1 ]]; then
+        # New directory
+        DIRS+=("$dir")
+        DIR_TOKENS+=($tokens)
+        DIR_FILES+=("$file"$'\n')
+    else
+        # Update existing directory
+        DIR_TOKENS[$idx]=$((DIR_TOKENS[$idx] + tokens))
+        DIR_FILES[$idx]+="$file"$'\n'
+    fi
+}
+
 # ==========================================================
 # Directory Scanning
 # ==========================================================
-declare -A dir_tokens=()  # Directory to token count mapping
-declare -A dir_files=()   # Directory to file list mapping
-
 scan_directory() {
     print_status "Analyzing repository structure..."
     
     local total_tokens=0
+    
     while IFS= read -r -d '' file; do
         # Skip if we shouldn't process this file
         should_process_file "$file" || continue
@@ -94,10 +133,10 @@ scan_directory() {
         chars=$(wc -c < "$file" | tr -d '[:space:]')
         local tokens=$((chars / 4))
         
-        # Update directory stats
-        dir_tokens["$dir_path"]=$((${dir_tokens["$dir_path"]:-0} + tokens))
-        dir_files["$dir_path"]="${dir_files["$dir_path"]:-}$file"$'\n'
+        # Update directory info
+        update_dir_info "$dir_path" "$tokens" "$file"
         total_tokens=$((total_tokens + tokens))
+        
     done < <(find . -type f -print0)
     
     echo "$total_tokens"  # Return total token count
@@ -110,39 +149,33 @@ show_directory_structure() {
     echo -e "\nRepository Structure:"
     
     # Sort directories for consistent output
-    local sorted_dirs=($(printf "%s\n" "${!dir_tokens[@]}" | sort))
-    
-    for dir in "${sorted_dirs[@]}"; do
-        local tokens=${dir_tokens["$dir"]}
-        local indent=$(($(echo "$dir" | tr -cd '/' | wc -c) * 2))
-        printf "%${indent}s%s (~%'d tokens)\n" "" "${dir##*/}/" "$tokens"
+    local i
+    for ((i=0; i<${#DIRS[@]}; i++)); do
+        local indent=$(($(echo "${DIRS[$i]}" | tr -cd '/' | wc -c) * 2))
+        printf "%${indent}s%s (~%'d tokens)\n" "" "${DIRS[$i]##*/}/" "${DIR_TOKENS[$i]}"
     done
     
     echo -e "\nTotal tokens: ~$1"
 }
 
 get_user_selection() {
-    local sorted_dirs=($(printf "%s\n" "${!dir_tokens[@]}" | sort))
-    local num_dirs=${#sorted_dirs[@]}
-    
     echo -e "\nSelect directories to process:"
     
-    for ((i=0; i<num_dirs; i++)); do
-        local dir="${sorted_dirs[$i]}"
-        local tokens=${dir_tokens["$dir"]}
-        echo "$((i+1)). $dir (~$tokens tokens)"
+    local i
+    for ((i=0; i<${#DIRS[@]}; i++)); do
+        echo "$((i+1)). ${DIRS[$i]} (~${DIR_TOKENS[$i]} tokens)"
     done
     
     echo -e "\nEnter numbers to include (e.g., \"1 2 3\"), or \"all\" for everything: "
-    read -r selection
+    read selection
     
     if [[ "$selection" == "all" ]]; then
-        echo "${sorted_dirs[*]}"
+        echo "${DIRS[*]}"
     else
         local result=""
         for num in $selection; do
-            if [[ "$num" =~ ^[0-9]+$ ]] && ((num > 0 && num <= num_dirs)); then
-                result+="${sorted_dirs[$((num-1))]} "
+            if [[ "$num" =~ ^[0-9]+$ ]] && ((num > 0 && num <= ${#DIRS[@]})); then
+                result+="${DIRS[$((num-1))]} "
             fi
         done
         echo "$result"
@@ -153,7 +186,7 @@ get_user_selection() {
 # Output Generation
 # ==========================================================
 generate_output() {
-    local dirs=("$@")
+    local selected=($@)
     local output_file="${OUTPUT_DIR}/$(basename "$PWD")-${TIMESTAMP}.txt"
     
     # Create output directory if needed
@@ -163,38 +196,42 @@ generate_output() {
     {
         echo "# Project: $(basename "$PWD")"
         echo "# Generated: $(date)"
-        echo "# Total Directories: ${#dirs[@]}"
+        echo "# Total Directories: ${#selected[@]}"
         echo ""
         echo "# Repository Structure:"
         
         # Show complete structure for context
-        for dir in "${!dir_tokens[@]}"; do
-            local tokens=${dir_tokens["$dir"]}
-            echo "#   $dir/ (~$tokens tokens)"
+        local i
+        for ((i=0; i<${#DIRS[@]}; i++)); do
+            echo "#   ${DIRS[$i]}/ (~${DIR_TOKENS[$i]} tokens)"
         done
         
         echo -e "\n# Included in this file:"
-        for dir in "${dirs[@]}"; do
-            echo "#   $dir/ (~${dir_tokens["$dir"]} tokens)"
+        for dir in "${selected[@]}"; do
+            local idx=$(get_dir_index "$dir")
+            [[ $idx -ne -1 ]] && echo "#   $dir/ (~${DIR_TOKENS[$idx]} tokens)"
         done
         echo "---"
     } > "$output_file"
     
     # Process selected directories
-    for dir in "${dirs[@]}"; do
-        echo -e "\n## Directory: $dir" >> "$output_file"
-        
-        # Read file list for this directory
-        while IFS= read -r file; do
-            [ -z "$file" ] && continue
-            {
-                echo "---"
-                echo "$file"
-                echo "---"
-                cat "$file"
-                echo ""
-            } >> "$output_file"
-        done <<< "${dir_files["$dir"]}"
+    for dir in "${selected[@]}"; do
+        local idx=$(get_dir_index "$dir")
+        if [[ $idx -ne -1 ]]; then
+            echo -e "\n## Directory: $dir" >> "$output_file"
+            
+            # Process files for this directory
+            while IFS= read -r file; do
+                [ -z "$file" ] && continue
+                {
+                    echo "---"
+                    echo "$file"
+                    echo "---"
+                    cat "$file"
+                    echo ""
+                } >> "$output_file"
+            done <<< "${DIR_FILES[$idx]}"
+        fi
     done
     
     print_status "Output written to: $(basename "$output_file")"
@@ -223,7 +260,7 @@ main() {
         selected_dirs=($(get_user_selection))
     else
         # Under limit, process everything
-        selected_dirs=(${!dir_tokens[@]})
+        selected_dirs=(${DIRS[@]})
     fi
     
     # Generate output
