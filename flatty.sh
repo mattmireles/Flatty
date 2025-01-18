@@ -2,6 +2,30 @@
 
 set -e  # Exit on error
 
+# Get version information from Git
+get_version_info() {
+    # Check if we're in a Git repository
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "dev-$(date +'%Y%m%d')"
+        return
+    }
+
+    # Get the latest tag and commit hash
+    local git_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+    local git_hash=$(git rev-parse --short HEAD)
+    local git_dirty=$(git status --porcelain 2>/dev/null | grep -q . && echo "-dirty" || echo "")
+    
+    if [ -n "$git_tag" ]; then
+        # If we have a tag, use it along with commit hash
+        echo "${git_tag}-${git_hash}${git_dirty}"
+    else
+        # If no tag exists, just use commit hash
+        echo "${git_hash}${git_dirty}"
+    fi
+}
+
+VERSION=$(get_version_info)
+
 # Configuration
 OUTPUT_DIR="$HOME/flattened"
 TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
@@ -9,7 +33,7 @@ SEPARATOR="---"
 
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
-output_file="$OUTPUT_DIR/$(basename "$PWD")-$TIMESTAMP.txt"
+output_file="$OUTPUT_DIR/$(basename "$PWD")-v${VERSION}-${TIMESTAMP}.txt"
 
 # Comprehensive file filtering
 is_text_file() {
@@ -55,7 +79,9 @@ is_excluded_dir() {
 # Clear output file and write header
 {
     echo "# Project: $(basename "$PWD")"
+    echo "# Flatty Version: ${VERSION}"
     echo "# Generated: $(date)"
+    echo "# Generator: flatty (https://github.com/yourusername/flatty)"
     echo ""
     echo "# Complete Repository Structure:"
     echo "# (showing all directories and files with token counts)"
