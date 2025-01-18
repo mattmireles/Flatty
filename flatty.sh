@@ -4,6 +4,12 @@ set -e  # Exit on error
 
 # Get version information from Git
 get_version_info() {
+    # Check if git command exists first
+    if ! command -v git >/dev/null 2>&1; then
+        echo "dev-$(date +'%Y%m%d')"
+        return
+    }
+
     # Check if we're in a Git repository
     if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "dev-$(date +'%Y%m%d')"
