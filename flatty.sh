@@ -8,13 +8,13 @@ get_version_info() {
     if ! command -v git >/dev/null 2>&1; then
         echo "dev-$(date +'%Y%m%d')"
         return
-    }
+    fi
 
     # Check if we're in a Git repository
     if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "dev-$(date +'%Y%m%d')"
         return
-    }
+    fi
 
     # Get the latest tag and commit hash
     local git_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
