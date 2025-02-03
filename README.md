@@ -18,11 +18,11 @@ Coding assistants like Cursor are amazeballs, but they work better for day-to-da
 
 Choose your adventure:
 
-# 🏃‍♂️ Quick Install (Easy mode)
+### 🏃‍♂️ Quick Install (Easy mode)
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mattmireles/flatty/main/install_flatty.sh | bash -s -- --quick
 ```
-# 🕵️‍♂️ Paranoid Install (Extra security checks)
+### 🕵️‍♂️ Paranoid Install (Extra security checks)
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mattmireles/flatty/main/install_flatty.sh | bash
 ```
