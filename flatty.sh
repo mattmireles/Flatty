@@ -71,7 +71,7 @@ get_version_info() {
 VERSION=$(get_version_info)
 
 # Configuration
-OUTPUT_DIR="$HOME/flattened"
+OUTPUT_DIR="$HOME/Documents/flatty"
 TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
 SEPARATOR="---"
 
@@ -86,7 +86,8 @@ is_text_file() {
         # First check exclusions
         *.git/*|*.DS_Store|*node_modules/*|*venv/*|*__pycache__/*|*dist/*|*build/*|\
         *.swp|*.swo|*.swn|*.pyc|*.pyo|*.rbc|*.yarb|*.o|*.obj|*.exe|*.dll|*.so|*.dylib|\
-        *.class|*.jar|*.war|*.ear|*.zip|*.tar|*.gz|*.rar|*.7z|*/.idea/*|*/.vscode/*) 
+        *.class|*.jar|*.war|*.ear|*.zip|*.tar|*.gz|*.rar|*.7z|*/.idea/*|*/.vscode/*|\
+        LICENSE|*LICENSE*|*.hex) 
             return 1 ;;
         
         # Then check known text file types
@@ -95,7 +96,8 @@ is_text_file() {
         *.html|*.css|*.scss|*.less|\
         *.json|*.yaml|*.yml|*.toml|*.ini|*.env|\
         *.md|*.txt|*.rst|*.xml|*.sql|*.conf|\
-        *.gradle|*.properties|*.plist|*.pbxproj|Makefile|Dockerfile)
+        *.gradle|*.properties|*.plist|*.pbxproj|Makefile|Dockerfile|\
+        .gitignore)
             return 0 ;;
             
         # For unknown extensions, check if it's text
@@ -169,10 +171,8 @@ matches_patterns() {
 
 # Clear output file and write header
 {
-    echo "# Project: $(basename "$PWD")"
-    echo "# Flatty Version: ${VERSION}"
-    echo "# Generated: $(date)"
-    echo "# Generator: flatty (https://github.com/yourusername/flatty)"
+    echo "Flatty"
+    echo "$(date)"
     echo ""
     echo "# Complete Repository Structure:"
     echo "# (showing all directories and files with token counts)"

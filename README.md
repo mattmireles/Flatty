@@ -23,7 +23,7 @@ Choose your adventure:
 curl -fsSL https://raw.githubusercontent.com/mattmireles/flatty/main/install_flatty.sh | bash -s -- --quick
 ```
 ```bash
-# 🕵️‍♂️ Paranoid Install (Trust no one)
+# 🕵️‍♂️ Paranoid Install (Extra security checks)
 curl -fsSL https://raw.githubusercontent.com/mattmireles/flatty/main/install_flatty.sh | bash
 ```
 
@@ -38,7 +38,7 @@ cd your-project-directory
 flatty
 ```
 
-This creates a nicely formatted text file in `~/flattened/` containing all your project's text files, ready for LLM consumption.
+This creates a nicely formatted text file in `~/Documents/flatty/` containing all your project's text files, ready for LLM consumption.
 
 ### Pattern-Based Filtering
 
@@ -150,7 +150,7 @@ To maintain the integrity of the `flatty.sh` script and ensure that the checksum
     ```
 
 **Explanation:** This hook ensures that every time `flatty.sh` is modified and a commit is made, the corresponding `flatty.sh.sha256` checksum file is automatically updated and included in the commit. This maintains the integrity verification process for the installation script.
-
 ## License
 
 [MIT](https://opensource.org/licenses/MIT)
+
