@@ -16,27 +16,28 @@ Coding assistants like Cursor are amazeballs, but they work better for day-to-da
 
 ## Installation
 
-You can install Flatty using the provided installer script:
+Choose your adventure:
 
 ```bash
+# 🏃‍♂️ Quick Install (Living dangerously!)
+curl -fsSL https://raw.githubusercontent.com/mattmireles/flatty/main/install_flatty.sh | bash -s -- --quick
+
+# 🕵️‍♂️ Paranoid Install (Trust no one)
 curl -fsSL https://raw.githubusercontent.com/mattmireles/flatty/main/install_flatty.sh | bash
 ```
 
-This will:
-1. Download the latest version of Flatty
-2. Install it to `/usr/local/bin/flatty`
-3. Make it executable and available system-wide
+The paranoid install (default) includes checksum verification and full security checks. Quick install skips these checks for the "I like to live dangerously" crowd.
 
 ## Usage
 
-Basic usage is as simple as:
+Basic usage is stupidly simple:
 
 ```bash
 cd your-project-directory
 flatty
 ```
 
-This will analyze your project and create text files in `~/flattened/` containing all the text files from your project.
+This creates a nicely formatted text file in `~/flattened/` containing all your project's text files, ready for LLM consumption.
 
 ### Pattern-Based Filtering
 

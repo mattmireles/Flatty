@@ -3,90 +3,129 @@
 # Exit on any error
 set -e
 
-# Trap errors and perform cleanup
-trap 'echo "An unexpected error occurred. Exiting."; rm -f "$DOWNLOAD_PATH"; exit 1;' ERR
+# Default to paranoid mode if no argument provided
+INSTALL_MODE="paranoid"
 
-# Define the source and destination paths
+# Parse command line arguments
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        --quick)
+            INSTALL_MODE="quick"
+            shift
+            ;;
+        *)
+            echo "🤔 Unknown option: $1"
+            echo "Usage: install.sh [--quick]"
+            echo "  --quick    Quick install (skips security checks)"
+            echo "  (no flag)  Paranoid install (full security checks)"
+            exit 1
+            ;;
+    esac
+done
+
+# Define paths
 SCRIPT_NAME="flatty.sh"
 DESTINATION="/usr/local/bin/flatty"
-GITHUB_RAW_URL="https://raw.githubusercontent.com/mattmireles/flatty/main/$SCRIPT_NAME"
-CHECKSUM_URL="https://raw.githubusercontent.com/mattmireles/flatty/main/$SCRIPT_NAME.sha256"
+GITHUB_RAW_URL="https://raw.githubusercontent.com/mattmireles/flatty/main"
+EXPECTED_CHECKSUM="443ecf95a6ab5e22d1d2a72d0193fa78eecce83961cfd7a9ddb3defe53dfac8b"
 
-echo "Installing Flatty..."
+# Welcome message based on mode
+case $INSTALL_MODE in
+    quick)
+        echo "🏃‍♂️ Living dangerously I see! Quick install mode activated..."
+        ;;
+    paranoid)
+        echo "🕵️‍♂️ Trust, but verify. Actually, skip the trust part..."
+        echo "Initiating paranoid installation mode..."
+        ;;
+esac
 
-# Function to check dependencies
-check_dependencies() {
-    for cmd in curl sudo sha256sum; do
-        if ! command -v "$cmd" &> /dev/null; then
-            echo "Error: '$cmd' is not installed. Please install '$cmd' and try again."
-            exit 1
-        fi
-    done
-}
+# Dependency checks with friendly messages
+if ! command -v curl >/dev/null 2>&1; then
+    echo "😅 Hmm... looks like curl is missing. I'd download it for you, but... well... chicken and egg problem 🐔"
+    echo "Try: "
+    echo "  macOS: brew install curl"
+    echo "  Ubuntu/Debian: sudo apt-get install curl"
+    echo "  Fedora: sudo dnf install curl"
+    exit 1
+fi
 
-# Call the function to check dependencies
-check_dependencies
+if ! command -v sudo >/dev/null 2>&1; then
+    echo "🤔 sudo not found. Either you're not a sudoer, or this is getting really interesting..."
+    exit 1
+fi
 
-# Check if /usr/local/bin exists and is writable
+# Permission and directory checks
+if [ ! -w "/usr/local/bin" ] && [ ! -w "/usr/local" ]; then
+    echo "🔐 Permission denied. Your computer seems to be playing hard to get."
+    echo "Try running with sudo, like this:"
+    echo "  curl -fsSL $GITHUB_RAW_URL/install_flatty.sh | sudo bash"
+    exit 1
+fi
+
+# Create /usr/local/bin if needed
 if [ ! -d "/usr/local/bin" ]; then
-    echo "Creating /usr/local/bin directory..."
+    echo "📁 Creating /usr/local/bin directory..."
     sudo mkdir -p /usr/local/bin
 fi
 
-# Check if Flatty is already installed
+# Handle existing installation
 if [ -f "$DESTINATION" ]; then
-    read -p "Flatty is already installed. Do you want to overwrite it? (y/N): " response
-    case "$response" in
-        [yY][eE][sS]|[yY]) 
-            echo "Overwriting existing Flatty installation..."
-            ;;
-        *)
-            echo "Installation aborted."
-            exit 0
-            ;;
-    esac
+    echo "🤨 Looks like Flatty is already installed. Updating to the latest version..."
 fi
 
-# Create a secure temporary directory
+# Create temporary directory
 TMP_DIR=$(mktemp -d)
 DOWNLOAD_PATH="$TMP_DIR/$SCRIPT_NAME"
-CHECKSUM_PATH="$TMP_DIR/$SCRIPT_NAME.sha256"
-
-# Ensure temporary directory is removed on exit
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-# Download the Flatty script
-echo "Downloading Flatty from GitHub..."
-if ! curl -fsSL "$GITHUB_RAW_URL" -o "$DOWNLOAD_PATH"; then
-    echo "Error: Failed to download Flatty script"
+# Download script
+echo "📥 Downloading Flatty..."
+if ! curl -fsSL "$GITHUB_RAW_URL/$SCRIPT_NAME" -o "$DOWNLOAD_PATH"; then
+    echo "😱 Download failed! Is GitHub having a case of the Mondays?"
     exit 1
 fi
 
-# Download the checksum
-echo "Downloading checksum..."
-if ! curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUM_PATH"; then
-    echo "Error: Failed to download checksum file"
-    exit 1
+# Verify checksum if in paranoid mode
+verify_checksum() {
+    local file="$1"
+    local expected="$2"
+    local actual=""
+
+    if command -v shasum >/dev/null 2>&1; then
+        actual=$(shasum -a 256 "$file" | cut -d' ' -f1)
+    elif command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$file" | cut -d' ' -f1)
+    else
+        echo "⚠️ No checksum tools found. Living life on the edge!"
+        return 0
+    fi
+
+    if [ "$actual" = "$expected" ]; then
+        echo "✅ Checksum verified. You can sleep soundly tonight."
+        return 0
+    else
+        return 1
+    fi
+}
+
+if [ "$INSTALL_MODE" = "paranoid" ]; then
+    echo "🔍 Verifying download with the thoroughness of a code reviewer before lunch..."
+    if ! verify_checksum "$DOWNLOAD_PATH" "$EXPECTED_CHECKSUM"; then
+        echo "❌ Checksum verification failed! Trust no one, especially not this download."
+        echo "Expected: $EXPECTED_CHECKSUM"
+        exit 1
+    fi
 fi
 
-# Verify checksum
-echo "Verifying download integrity..."
-cd "$TMP_DIR"
-sha256sum -c "$SCRIPT_NAME.sha256" || { echo "Checksum verification failed."; exit 1; }
-
-# Make the script executable
+# Make executable and install
 chmod +x "$DOWNLOAD_PATH"
-
-# Move the script to /usr/local/bin
-echo "Installing Flatty to $DESTINATION..."
+echo "📦 Installing to $DESTINATION..."
 if sudo mv "$DOWNLOAD_PATH" "$DESTINATION"; then
-    echo "✅ Flatty has been installed successfully!"
-    echo "You can now flatten any directory by navigating to it and running the 'flatty' command."
-    echo "The flattened output will be saved to ~/flattened/"
-    echo "To uninstall Flatty, run: sudo rm /usr/local/bin/flatty"
+    echo "✨ Success! Flatty is now installed and ready to rock!"
+    echo "🚀 Run 'flatty' in any directory to flatten it for LLMs"
+    echo "📂 Output will be saved to ~/flattened/"
 else
-    echo "Error: Failed to install Flatty"
+    echo "💥 Installation failed. Murphy's law strikes again!"
     exit 1
-fi 
-
-# Cleanup is handled by the EXIT trap
+fi
