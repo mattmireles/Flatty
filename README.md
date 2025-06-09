@@ -13,6 +13,7 @@ Coding assistants like Cursor are amazeballs, but they work better for day-to-da
 - **Comprehensive File Flattening:** Converts entire codebases into structured text files suitable for LLMs.
 - **Smart File Handling:** Intelligently skips binary files, images, build artifacts, package directories, hidden files, and system files.
 - ****🎉 **Pattern-Based Filtering:** **Enhance your flattening process by selectively including files based on specific code patterns or keywords in both file content and filenames. Customize your inclusion criteria using `AND`/`OR` conditions to target exactly what you need for focused analysis.**
+- **✨ macOS Super-Workflow:** Automatically copies the flattened text to your clipboard *and* reveals the output file in Finder—zero to LLM in seconds.
 
 ## Installation
 
@@ -39,6 +40,8 @@ flatty
 ```
 
 This creates a nicely formatted text file in `~/Documents/flatty/` containing all your project's text files, ready for LLM consumption.
+
+**On macOS, it's even better:** `flatty` automatically copies the entire flattened text to your clipboard and reveals the file in Finder, so you can go from terminal to pasting in your LLM in one step.
 
 ### Pattern-Based Filtering
 
@@ -94,7 +97,7 @@ Flatty intelligently skips:
 
 ## Output
 
-Flattened text files are saved in the `~/flattened/` directory with filenames formatted as:
+Flattened text files are saved in the `~/Documents/flatty/` directory with filenames formatted as:
 
 ```
 <project-name>-v<version>-<timestamp>.txt
