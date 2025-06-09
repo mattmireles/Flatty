@@ -3,13 +3,9 @@
 # Exit on any error
 # set -e
 
-echo "--- SCRIPT EXECUTION STARTED (v2) ---"
-
-echo "DEBUG: Script started"
-echo "DEBUG: Current directory: $(pwd)"
-
 # Default to paranoid mode if no argument provided
 INSTALL_MODE="paranoid"
+DEBUG_MODE="false"
 
 # Parse command line arguments
 while [[ "$#" -gt 0 ]]; do
@@ -18,25 +14,40 @@ while [[ "$#" -gt 0 ]]; do
             INSTALL_MODE="quick"
             shift
             ;;
+        --debug)
+            DEBUG_MODE="true"
+            shift
+            ;;
         *)
             echo "🤔 Unknown option: $1"
-            echo "Usage: install.sh [--quick]"
+            echo "Usage: install.sh [--quick] [--debug]"
             echo "  --quick    Quick install (skips security checks)"
+            echo "  --debug    Show debug output"
             echo "  (no flag)  Paranoid install (full security checks)"
             exit 1
             ;;
     esac
 done
 
-echo "DEBUG: Install mode: $INSTALL_MODE"
+# Debug function
+debug() {
+    if [ "$DEBUG_MODE" = "true" ]; then
+        echo "$1"
+    fi
+}
+
+debug "--- SCRIPT EXECUTION STARTED (v2) ---"
+debug "DEBUG: Script started"
+debug "DEBUG: Current directory: $(pwd)"
+debug "DEBUG: Install mode: $INSTALL_MODE"
 
 # Define paths
 SCRIPT_NAME="flatty.sh"
-GITHUB_RAW_URL="https://raw.githubusercontent.com/mattmireles/flatty/main"
+GITHUB_RAW_URL="https://raw.githubusercontent.com/mattmireles/Flatty/main"
 CHECKSUM_FILE_URL="$GITHUB_RAW_URL/$SCRIPT_NAME.sha256"
 
-echo "DEBUG: Will download from: $GITHUB_RAW_URL/$SCRIPT_NAME"
-echo "DEBUG: Checksum file URL: $CHECKSUM_FILE_URL"
+debug "DEBUG: Will download from: $GITHUB_RAW_URL/$SCRIPT_NAME"
+debug "DEBUG: Checksum file URL: $CHECKSUM_FILE_URL"
 
 # Set install location based on mode
 if [ "$INSTALL_MODE" = "quick" ]; then
@@ -52,37 +63,39 @@ fi
 # Download script
 echo "📥 Downloading Flatty..."
 TMP_DIR=$(mktemp -d)
-echo "DEBUG: Created temp dir: $TMP_DIR"
 DOWNLOAD_PATH="$TMP_DIR/$SCRIPT_NAME"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-echo "DEBUG: Will download to: $DOWNLOAD_PATH"
+debug "DEBUG: Created temp dir: $TMP_DIR"
+debug "DEBUG: Will download to: $DOWNLOAD_PATH"
+
 if ! curl -fsSL "$GITHUB_RAW_URL/$SCRIPT_NAME" -o "$DOWNLOAD_PATH"; then
     echo "😱 Download failed! Is GitHub having a case of the Mondays?"
     exit 1
 fi
-echo "DEBUG: Download complete. File exists: $(test -f "$DOWNLOAD_PATH" && echo "yes" || echo "no")"
-echo "DEBUG: File size: $(wc -c < "$DOWNLOAD_PATH") bytes"
+
+debug "DEBUG: Download complete. File exists: $(test -f "$DOWNLOAD_PATH" && echo "yes" || echo "no")"
+debug "DEBUG: File size: $(wc -c < "$DOWNLOAD_PATH") bytes"
 
 # Verify checksum in paranoid mode
 if [ "$INSTALL_MODE" = "paranoid" ]; then
     echo "🔍 Verifying download with the thoroughness of a code reviewer before lunch..."
     
-    echo "--- DEBUG INFO ---"
-    echo "Temp dir: $TMP_DIR"
-    echo "Listing files..."
-    ls -la "$TMP_DIR"
+    debug "--- DEBUG INFO ---"
+    debug "Temp dir: $TMP_DIR"
+    debug "Listing files..."
+    debug "$(ls -la "$TMP_DIR")"
     
     if ! curl -fsSL "$CHECKSUM_FILE_URL" -o "$TMP_DIR/$SCRIPT_NAME.sha256"; then
         echo "😱 Could not download checksum file!"
         exit 1
     fi
     
-    echo "Checksum file downloaded. Listing files again:"
-    ls -la "$TMP_DIR"
-    echo "Contents of checksum file:"
-    cat "$TMP_DIR/$SCRIPT_NAME.sha256"
-    echo "--------------------"
+    debug "Checksum file downloaded. Listing files again:"
+    debug "$(ls -la "$TMP_DIR")"
+    debug "Contents of checksum file:"
+    debug "$(cat "$TMP_DIR/$SCRIPT_NAME.sha256")"
+    debug "--------------------"
 
     # Run the check from inside the temp dir
     if ! (cd "$TMP_DIR" && shasum -a 256 -c "$SCRIPT_NAME.sha256" 2>/dev/null || \
