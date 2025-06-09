@@ -234,4 +234,20 @@ find . -type f | sort | while read -r file; do
 done
 
 echo "$SEPARATOR" >> "$output_file"
-echo "Processing complete! Output saved to: $output_file"
+
+# Post-processing: copy content to clipboard and reveal in Finder on macOS.
+if [[ "$(uname)" == "Darwin" ]]; then
+    # Copy file content to clipboard
+    if command -v pbcopy >/dev/null 2>&1; then
+        cat "$output_file" | pbcopy
+    fi
+    
+    # Reveal file in Finder
+    if command -v open >/dev/null 2>&1; then
+        open -R "$output_file"
+    fi
+    
+    echo "Processing complete! Output saved to $output_file, copied to clipboard, and revealed in Finder."
+else
+    echo "Processing complete! Output saved to: $output_file"
+fi
