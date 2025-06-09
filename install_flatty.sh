@@ -3,6 +3,8 @@
 # Exit on any error
 # set -e
 
+echo "--- SCRIPT EXECUTION STARTED (v2) ---"
+
 echo "DEBUG: Script started"
 echo "DEBUG: Current directory: $(pwd)"
 
@@ -65,24 +67,22 @@ echo "DEBUG: File size: $(wc -c < "$DOWNLOAD_PATH") bytes"
 # Verify checksum in paranoid mode
 if [ "$INSTALL_MODE" = "paranoid" ]; then
     echo "🔍 Verifying download with the thoroughness of a code reviewer before lunch..."
+    
+    echo "--- DEBUG INFO ---"
+    echo "Temp dir: $TMP_DIR"
+    echo "Listing files..."
+    ls -la "$TMP_DIR"
+    
     if ! curl -fsSL "$CHECKSUM_FILE_URL" -o "$TMP_DIR/$SCRIPT_NAME.sha256"; then
-        echo "😱 Could not download checksum file! Proceeding without verification is a bad idea."
+        echo "😱 Could not download checksum file!"
         exit 1
     fi
-
-    echo "=== DEBUG INFO ==="
-    echo "Temp dir: $TMP_DIR"
-    echo "Files in temp dir:"
+    
+    echo "Checksum file downloaded. Listing files again:"
     ls -la "$TMP_DIR"
-    echo "Contents of flatty.sh:"
-    head -n 5 "$DOWNLOAD_PATH"
     echo "Contents of checksum file:"
     cat "$TMP_DIR/$SCRIPT_NAME.sha256"
-    echo "Running checksum command:"
-    cd "$TMP_DIR" && shasum -a 256 "$SCRIPT_NAME"
-    echo "Running verification:"
-    cd "$TMP_DIR" && shasum -a 256 -c "$SCRIPT_NAME.sha256"
-    echo "=== END DEBUG INFO ==="
+    echo "--------------------"
 
     # Run the check from inside the temp dir
     if ! (cd "$TMP_DIR" && shasum -a 256 -c "$SCRIPT_NAME.sha256" 2>/dev/null || \

@@ -137,7 +137,10 @@ To maintain the integrity of the `flatty.sh` script and ensure that the checksum
     #!/bin/bash
 
     # Generate SHA256 checksum for flatty.sh
-    sha256sum flatty.sh > flatty.sh.sha256
+    # For macOS:
+    shasum -a 256 flatty.sh > flatty.sh.sha256
+    # For Linux:
+    # sha256sum flatty.sh > flatty.sh.sha256
 
     # Add the checksum file to the commit
     git add flatty.sh.sha256
