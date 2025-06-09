@@ -1,7 +1,10 @@
 #!/bin/bash
 
 # Exit on any error
-set -e
+# set -e
+
+echo "DEBUG: Script started"
+echo "DEBUG: Current directory: $(pwd)"
 
 # Default to paranoid mode if no argument provided
 INSTALL_MODE="paranoid"
@@ -23,10 +26,15 @@ while [[ "$#" -gt 0 ]]; do
     esac
 done
 
+echo "DEBUG: Install mode: $INSTALL_MODE"
+
 # Define paths
 SCRIPT_NAME="flatty.sh"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/mattmireles/flatty/main"
-EXPECTED_CHECKSUM="443ecf95a6ab5e22d1d2a72d0193fa78eecce83961cfd7a9ddb3defe53dfac8b"
+CHECKSUM_FILE_URL="$GITHUB_RAW_URL/$SCRIPT_NAME.sha256"
+
+echo "DEBUG: Will download from: $GITHUB_RAW_URL/$SCRIPT_NAME"
+echo "DEBUG: Checksum file URL: $CHECKSUM_FILE_URL"
 
 # Set install location based on mode
 if [ "$INSTALL_MODE" = "quick" ]; then
@@ -42,19 +50,43 @@ fi
 # Download script
 echo "📥 Downloading Flatty..."
 TMP_DIR=$(mktemp -d)
+echo "DEBUG: Created temp dir: $TMP_DIR"
 DOWNLOAD_PATH="$TMP_DIR/$SCRIPT_NAME"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+echo "DEBUG: Will download to: $DOWNLOAD_PATH"
 if ! curl -fsSL "$GITHUB_RAW_URL/$SCRIPT_NAME" -o "$DOWNLOAD_PATH"; then
     echo "😱 Download failed! Is GitHub having a case of the Mondays?"
     exit 1
 fi
+echo "DEBUG: Download complete. File exists: $(test -f "$DOWNLOAD_PATH" && echo "yes" || echo "no")"
+echo "DEBUG: File size: $(wc -c < "$DOWNLOAD_PATH") bytes"
 
 # Verify checksum in paranoid mode
 if [ "$INSTALL_MODE" = "paranoid" ]; then
     echo "🔍 Verifying download with the thoroughness of a code reviewer before lunch..."
-    if ! (echo "$EXPECTED_CHECKSUM  $DOWNLOAD_PATH" | shasum -a 256 -c 2>/dev/null || \
-          echo "$EXPECTED_CHECKSUM  $DOWNLOAD_PATH" | sha256sum -c 2>/dev/null); then
+    if ! curl -fsSL "$CHECKSUM_FILE_URL" -o "$TMP_DIR/$SCRIPT_NAME.sha256"; then
+        echo "😱 Could not download checksum file! Proceeding without verification is a bad idea."
+        exit 1
+    fi
+
+    echo "=== DEBUG INFO ==="
+    echo "Temp dir: $TMP_DIR"
+    echo "Files in temp dir:"
+    ls -la "$TMP_DIR"
+    echo "Contents of flatty.sh:"
+    head -n 5 "$DOWNLOAD_PATH"
+    echo "Contents of checksum file:"
+    cat "$TMP_DIR/$SCRIPT_NAME.sha256"
+    echo "Running checksum command:"
+    cd "$TMP_DIR" && shasum -a 256 "$SCRIPT_NAME"
+    echo "Running verification:"
+    cd "$TMP_DIR" && shasum -a 256 -c "$SCRIPT_NAME.sha256"
+    echo "=== END DEBUG INFO ==="
+
+    # Run the check from inside the temp dir
+    if ! (cd "$TMP_DIR" && shasum -a 256 -c "$SCRIPT_NAME.sha256" 2>/dev/null || \
+          cd "$TMP_DIR" && sha256sum -c "$SCRIPT_NAME.sha256" 2>/dev/null); then
         echo "❌ Checksum verification failed! Trust no one, especially not this download."
         exit 1
     fi
