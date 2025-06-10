@@ -171,7 +171,7 @@ matches_patterns() {
 
 # Clear output file and write header
 {
-    echo "Flatty"
+    echo "$(basename "$PWD")"
     echo "$(date)"
     echo ""
     echo "# Complete Repository Structure:"
